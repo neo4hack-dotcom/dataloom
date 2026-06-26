@@ -11,12 +11,43 @@ deterministic heuristics so the app is always usable offline.
 from __future__ import annotations
 
 import json
+import re
 import httpx
 from typing import Any
 
 OLLAMA_URL = "http://localhost:11434"
 DEFAULT_MODEL = "qwen2.5-coder:7b"
 EMBED_MODEL = "qwen2.5-coder:7b"
+
+
+def parse_json_loose(text: str) -> Any:
+    """
+    Tolerant JSON parse for local models. Strips <think> reasoning blocks and
+    markdown fences, isolates the first JSON object/array, repairs trailing commas.
+    Returns {} on total failure rather than raising — callers fall back to heuristics.
+    """
+    if not text:
+        return {}
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    fence = re.search(r"```(?:json)?\s*(.*?)```", cleaned, flags=re.DOTALL)
+    if fence:
+        cleaned = fence.group(1)
+    cleaned = cleaned.strip()
+    for candidate in (cleaned, text):
+        try:
+            return json.loads(candidate)
+        except (ValueError, TypeError):
+            pass
+    for open_ch, close_ch in (("{", "}"), ("[", "]")):
+        start, end = cleaned.find(open_ch), cleaned.rfind(close_ch)
+        if 0 <= start < end:
+            snippet = cleaned[start:end + 1]
+            for attempt in (snippet, re.sub(r",\s*([}\]])", r"\1", snippet)):
+                try:
+                    return json.loads(attempt)
+                except ValueError:
+                    continue
+    return {}
 
 
 def is_up(timeout: float = 1.0) -> bool:
@@ -52,17 +83,23 @@ def generate(prompt: str, system: str = "", model: str | None = None,
     text = r.json().get("response", "")
     if not json_mode:
         return text
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        # best-effort: extract first {...} block
-        start, end = text.find("{"), text.rfind("}")
-        if start >= 0 and end > start:
-            try:
-                return json.loads(text[start:end + 1])
-            except json.JSONDecodeError:
-                pass
-        return {"_raw": text}
+    parsed = parse_json_loose(text)
+    return parsed if parsed else {"_raw": text}
+
+
+def complete_text(prompt: str, system: str = "", model: str | None = None,
+                  temperature: float = 0.3, timeout: float = 120.0) -> str:
+    """Plain-text completion (no JSON mode) — used by the conversational copilot."""
+    payload: dict[str, Any] = {
+        "model": model or DEFAULT_MODEL,
+        "prompt": prompt,
+        "system": system,
+        "stream": False,
+        "options": {"temperature": temperature, "num_ctx": 8192},
+    }
+    r = httpx.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=timeout)
+    r.raise_for_status()
+    return r.json().get("response", "").strip()
 
 
 def embed(text: str, model: str | None = None, timeout: float = 30.0) -> list[float]:

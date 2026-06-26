@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
 import {
   GitCompare, KeyRound, Check, X, Sparkles, ArrowRight, Grid3x3, Link2, Plus, Trash2,
+  MessageSquareText, Loader2,
 } from "lucide-react";
 import { useCatalog } from "../store";
-import { api } from "../api";
+import { api, type RelExplanation } from "../api";
 import { EmptyState, shortDs, confidenceColor } from "../lib/ui";
 
 type SubTab = "keys" | "samefield" | "heatmap";
@@ -47,8 +48,11 @@ export function Relationships() {
 }
 
 function KeysView() {
-  const { state, mutate, toast } = useCatalog();
+  const { state, health, mutate, toast } = useCatalog();
   const rels = state?.relationships ?? [];
+  const [expl, setExpl] = useState<Record<number, RelExplanation>>({});
+  const [explaining, setExplaining] = useState<number | null>(null);
+  const llmUp = health?.llm.up ?? false;
 
   const setStatus = async (idx: number, status: string) => {
     await mutate((v) => api.setRelStatus(idx, status, v));
@@ -59,41 +63,74 @@ function KeysView() {
     await mutate((v) => api.deleteRelationship(idx, v));
     toast("ok", "Relationship deleted");
   };
+  const explain = async (idx: number, r: typeof rels[number]) => {
+    setExplaining(idx);
+    try {
+      const res = await api.explainRelationship({
+        child_dataset_id: r.child.dataset_id, child_column: r.child.column,
+        parent_dataset_id: r.parent.dataset_id, parent_column: r.parent.column,
+      });
+      setExpl((e) => ({ ...e, [idx]: res.explanation }));
+    } catch (e) {
+      toast("err", (e as Error).message.includes("503") ? "Local LLM unavailable" : "Explanation failed");
+    } finally { setExplaining(null); }
+  };
 
   return (
     <div className="space-y-2">
       {rels.map((r, i) => (
-        <div key={i} className={`card flex items-center gap-3 p-3.5 ${r.status === "rejected" ? "opacity-50" : ""}`}>
-          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-amber-500/10 text-amber-500">
-            <KeyRound size={18} />
-          </div>
-          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <div className="flex min-w-0 items-center gap-1.5 text-sm">
-              <span className="min-w-0 truncate font-mono">
-                <span className="text-slate-400">{shortDs(r.child.dataset_id)}.</span>
-                <span className="font-semibold">{r.child.column}</span>
-              </span>
-              <ArrowRight size={15} className="shrink-0 text-loom-500" />
-              <span className="min-w-0 truncate font-mono">
-                <span className="text-slate-400">{shortDs(r.parent.dataset_id)}.</span>
-                <span className="font-semibold">{r.parent.column}</span>
-              </span>
-              {(r as any).manual && <span className="chip bg-slate-500/10 text-slate-400 shrink-0">manual</span>}
+        <div key={i} className={`card p-3.5 ${r.status === "rejected" ? "opacity-50" : ""}`}>
+          <div className="flex items-center gap-3">
+            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-amber-500/10 text-amber-500">
+              <KeyRound size={18} />
             </div>
-            <span className="truncate text-[11px] text-slate-400">{r.reason}</span>
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <div className="flex min-w-0 items-center gap-1.5 text-sm">
+                <span className="min-w-0 truncate font-mono">
+                  <span className="text-slate-400">{shortDs(r.child.dataset_id)}.</span>
+                  <span className="font-semibold">{r.child.column}</span>
+                </span>
+                <ArrowRight size={15} className="shrink-0 text-loom-500" />
+                <span className="min-w-0 truncate font-mono">
+                  <span className="text-slate-400">{shortDs(r.parent.dataset_id)}.</span>
+                  <span className="font-semibold">{r.parent.column}</span>
+                </span>
+                {(r as any).manual && <span className="chip bg-slate-500/10 text-slate-400 shrink-0">manual</span>}
+              </div>
+              <span className="truncate text-[11px] text-slate-400">{r.reason}</span>
+            </div>
+            <span className={`chip shrink-0 ${confidenceColor(r.confidence)} bg-current/10 font-mono`}>{r.confidence.toFixed(0)}%</span>
+            <button onClick={() => explain(i, r)} disabled={!llmUp || explaining === i}
+              className="btn-ghost !p-1.5 text-loom-500 shrink-0" title="Explain in business terms (AI)">
+              {explaining === i ? <Loader2 size={15} className="animate-spin" /> : <MessageSquareText size={15} />}
+            </button>
+            {r.status === "validated" ? (
+              <span className="chip shrink-0 bg-emerald-500/10 text-emerald-500"><Check size={12} /> validated</span>
+            ) : (
+              <div className="flex shrink-0 gap-1">
+                <button onClick={() => setStatus(i, "validated")} className="btn-ghost !p-1.5 text-emerald-500" title="Validate"><Check size={16} /></button>
+                <button onClick={() => setStatus(i, "rejected")} className="btn-ghost !p-1.5 text-rose-500" title="Reject"><X size={16} /></button>
+              </div>
+            )}
+            <button onClick={() => del(i)} className="btn-ghost !p-1.5 text-slate-400 hover:text-rose-500 shrink-0" title="Delete">
+              <Trash2 size={15} />
+            </button>
           </div>
-          <span className={`chip shrink-0 ${confidenceColor(r.confidence)} bg-current/10 font-mono`}>{r.confidence.toFixed(0)}%</span>
-          {r.status === "validated" ? (
-            <span className="chip shrink-0 bg-emerald-500/10 text-emerald-500"><Check size={12} /> validated</span>
-          ) : (
-            <div className="flex shrink-0 gap-1">
-              <button onClick={() => setStatus(i, "validated")} className="btn-ghost !p-1.5 text-emerald-500" title="Validate"><Check size={16} /></button>
-              <button onClick={() => setStatus(i, "rejected")} className="btn-ghost !p-1.5 text-rose-500" title="Reject"><X size={16} /></button>
+          {expl[i] && (
+            <div className="mt-2.5 flex items-start gap-2 rounded-lg border border-loom-500/30 bg-loom-500/5 p-2.5 text-sm animate-fade-in">
+              <Sparkles size={15} className="mt-0.5 shrink-0 text-loom-500" />
+              <div className="flex-1">
+                <span className="text-slate-700 dark:text-slate-200">{expl[i].meaning}</span>
+                <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
+                  <span className="chip bg-loom-500/10 font-mono text-loom-500">{expl[i].cardinality}</span>
+                  <span className={`chip ${confidenceColor(expl[i].confidence)} bg-current/10`}>conf. {expl[i].confidence}%</span>
+                  {expl[i].caveats.map((c, k) => (
+                    <span key={k} className="text-slate-400">· {c}</span>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
-          <button onClick={() => del(i)} className="btn-ghost !p-1.5 text-slate-400 hover:text-rose-500 shrink-0" title="Delete">
-            <Trash2 size={15} />
-          </button>
         </div>
       ))}
       <AddRelForm />

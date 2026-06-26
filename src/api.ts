@@ -152,4 +152,74 @@ export const api = {
   // -- reset --
   resetCatalog: (baseVersion: number) =>
     req<{ ok: boolean; version: number }>("/reset", { method: "POST", baseVersion }),
+
+  // -- guided exploration (5 local-LLM features) --
+  suggestColumn: (dataset_id: string, column: string) =>
+    req<{ ok: boolean; suggestion: ColumnSuggestion }>("/llm/suggest-column", {
+      method: "POST", body: JSON.stringify({ dataset_id, column }),
+    }),
+  applyColumn: (body: {
+    dataset_id: string; column: string;
+    definition?: string; calculation?: string | null; sensitivity?: string; status?: string;
+  }, baseVersion: number) =>
+    req<{ ok: boolean; version: number }>("/llm/apply-column", {
+      method: "POST", body: JSON.stringify(body), baseVersion,
+    }),
+  documentTable: (dataset_id: string) =>
+    req<{ ok: boolean; result: TableSuggestion }>("/llm/document-table", {
+      method: "POST", body: JSON.stringify({ dataset_id }),
+    }),
+  applyTable: (body: {
+    dataset_id: string; table_definition?: string; domain?: string;
+    columns: { name: string; definition?: string; calculation?: string | null; sensitivity?: string }[];
+  }, baseVersion: number) =>
+    req<{ ok: boolean; version: number }>("/llm/apply-table", {
+      method: "POST", body: JSON.stringify(body), baseVersion,
+    }),
+  copilot: (question: string, history: { role: string; content: string }[]) =>
+    req<{ ok: boolean; answer: string; cited: { dataset_id: string; column: string }[] }>("/llm/copilot", {
+      method: "POST", body: JSON.stringify({ question, history }),
+    }),
+  completionQueue: () =>
+    req<{ ok: boolean; items: CompletionItem[] }>("/llm/completion-queue"),
+  explainRelationship: (body: {
+    child_dataset_id: string; child_column: string;
+    parent_dataset_id: string; parent_column: string;
+  }) =>
+    req<{ ok: boolean; explanation: RelExplanation }>("/llm/explain-relationship", {
+      method: "POST", body: JSON.stringify(body),
+    }),
 };
+
+export interface ColumnSuggestion {
+  definition: string;
+  calculation: string | null;
+  semantic_type: string;
+  sensitivity: string;
+  confidence: number;
+  evidence: string[];
+}
+
+export interface TableSuggestion {
+  table_definition: string;
+  domain: string;
+  columns: { name: string; definition: string; calculation: string | null; sensitivity: string; confidence: number }[];
+}
+
+export interface CompletionItem {
+  kind: string;
+  dataset_id: string;
+  column: string | null;
+  label: string;
+  reasons?: string[];
+  action: string;
+  impact: number;
+  match_index?: number;
+}
+
+export interface RelExplanation {
+  meaning: string;
+  cardinality: string;
+  confidence: number;
+  caveats: string[];
+}

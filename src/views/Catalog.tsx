@@ -81,20 +81,22 @@ function TableRow({ d, isActive, pii, onSelect }: {
     toast("ok", `Table "${d.name}" removed`);
   };
   return (
-    <button onClick={onSelect}
-      className={`group mb-0.5 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm ${
+    <div
+      className={`group mb-0.5 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm ${
         isActive ? "bg-loom-500/10 text-loom-600 dark:text-loom-300" : "hover:bg-slate-100 dark:hover:bg-slate-800"}`}>
-      <Table2 size={15} className="shrink-0 opacity-70" />
-      <div className="min-w-0 flex-1">
-        <div className="truncate font-medium">{d.name}</div>
-        <div className="truncate text-[10px] text-slate-400">{d.schema} · {d.columns.length} col</div>
-      </div>
-      {pii > 0 && <Lock size={12} className="text-rose-400" />}
+      <button onClick={onSelect} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+        <Table2 size={15} className="shrink-0 opacity-70" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate font-medium">{d.name}</div>
+          <div className="truncate text-[10px] text-slate-400">{d.schema} · {d.columns.length} col</div>
+        </div>
+      </button>
+      {pii > 0 && <Lock size={12} className="shrink-0 text-rose-400" />}
       <button onClick={del}
-        className="opacity-0 transition-opacity group-hover:opacity-100 text-slate-400 hover:text-rose-500 !p-0">
+        className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 text-slate-400 hover:text-rose-500">
         <Trash2 size={13} />
       </button>
-    </button>
+    </div>
   );
 }
 

@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import {
   LayoutDashboard, Database, Table2, GitCompare, Workflow, Bot, Tags,
   Search, Settings as SettingsIcon, Command, Moon, Sun, Sparkles, Cpu,
-  CircleDot, Link2,
+  CircleDot, Link2, Compass,
 } from "lucide-react";
 import { CatalogProvider, useCatalog } from "./store";
 import { CommandPalette } from "./components/CommandPalette";
@@ -11,6 +11,7 @@ import { Toaster } from "./components/Toaster";
 import { Overview } from "./views/Overview";
 import { Connections } from "./views/Connections";
 import { Catalog } from "./views/Catalog";
+import { Explorer } from "./views/Explorer";
 import { Relationships } from "./views/Relationships";
 import { Lineage } from "./views/Lineage";
 import { Agents } from "./views/Agents";
@@ -19,13 +20,14 @@ import { SearchView } from "./views/SearchView";
 import { SettingsView } from "./views/SettingsView";
 
 export type Tab =
-  | "overview" | "connections" | "catalog" | "relationships"
+  | "overview" | "connections" | "catalog" | "explorer" | "relationships"
   | "lineage" | "agents" | "glossary" | "search" | "settings";
 
 const TABS: { id: Tab; label: string; icon: typeof Database }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "connections", label: "Connections", icon: Database },
   { id: "catalog", label: "Catalog", icon: Table2 },
+  { id: "explorer", label: "Explorer", icon: Compass },
   { id: "relationships", label: "Relationships", icon: GitCompare },
   { id: "lineage", label: "Lineage", icon: Workflow },
   { id: "agents", label: "Agents", icon: Bot },
@@ -155,6 +157,7 @@ function Shell() {
               {tab === "overview" && <Overview goto={setTab} />}
               {tab === "connections" && <Connections goto={setTab} />}
               {tab === "catalog" && <Catalog />}
+              {tab === "explorer" && <Explorer />}
               {tab === "relationships" && <Relationships />}
               {tab === "lineage" && <Lineage />}
               {tab === "agents" && <Agents />}
