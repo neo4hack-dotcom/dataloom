@@ -1,0 +1,9 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+httpx==0.28.1
+aiofiles==24.1.0
+# Optional warehouse drivers — installed only if you connect real sources.
+# The app runs fully in Demo mode without them.
+# oracledb==2.5.1
+# clickhouse-connect==0.8.11

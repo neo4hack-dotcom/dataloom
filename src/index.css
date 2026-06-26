@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light dark;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  @apply bg-slate-50 text-slate-800 dark:bg-[#0a0e1a] dark:text-slate-200;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+}
+
+/* slim scrollbars */
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-thumb { @apply bg-slate-300 dark:bg-slate-700 rounded-full; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-slate-200 bg-white shadow-sm
+           dark:border-slate-800 dark:bg-slate-900/60;
+  }
+  .btn {
+    @apply inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium
+           transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-loom-600 text-white hover:bg-loom-700 shadow-sm shadow-loom-600/30;
+  }
+  .btn-ghost {
+    @apply btn text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800;
+  }
+  .btn-outline {
+    @apply btn border border-slate-300 text-slate-700 hover:bg-slate-100
+           dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium;
+  }
+  .input {
+    @apply w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none
+           focus:border-loom-500 focus:ring-2 focus:ring-loom-500/30
+           dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100;
+  }
+}
+
+.bg-grid {
+  background-image:
+    linear-gradient(to right, rgba(120,140,180,.08) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(120,140,180,.08) 1px, transparent 1px);
+  background-size: 22px 22px;
+}

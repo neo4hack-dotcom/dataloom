@@ -1,0 +1,8 @@
+node_modules
+dist
+server/.venv
+server/db.json
+server/__pycache__
+server/engine/__pycache__
+*.log
+.DS_Store
