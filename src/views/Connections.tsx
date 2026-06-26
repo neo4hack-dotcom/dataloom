@@ -1,6 +1,6 @@
 import { useState } from "react";
 import {
-  Database, Plus, Trash2, Zap, Server, Boxes, FlaskConical, Cpu, Check,
+  Database, Plus, Trash2, Zap, Server, Boxes, FlaskConical, Cpu, Check, Package, Link2,
 } from "lucide-react";
 import { useCatalog } from "../store";
 import { api } from "../api";
@@ -8,32 +8,46 @@ import { EmptyState, timeAgo } from "../lib/ui";
 import type { Tab } from "../App";
 
 const TYPE_META: Record<string, { label: string; icon: typeof Server; color: string }> = {
-  demo: { label: "Demo", icon: FlaskConical, color: "text-violet-500 bg-violet-500/10" },
-  oracle: { label: "Oracle", icon: Database, color: "text-rose-500 bg-rose-500/10" },
-  clickhouse: { label: "ClickHouse", icon: Boxes, color: "text-amber-500 bg-amber-500/10" },
+  demo:       { label: "Demo",             icon: FlaskConical, color: "text-violet-500 bg-violet-500/10" },
+  oracle:     { label: "Oracle",           icon: Database,     color: "text-rose-500 bg-rose-500/10" },
+  clickhouse: { label: "ClickHouse",       icon: Boxes,        color: "text-amber-500 bg-amber-500/10" },
+  okf:        { label: "Frictionless/OKF", icon: Package,      color: "text-teal-500 bg-teal-500/10" },
 };
+
+type ConnType = "demo" | "oracle" | "clickhouse" | "okf";
 
 export function Connections({ goto }: { goto: (t: Tab) => void }) {
   const { state, health, mutate, setActiveRun, toast } = useCatalog();
   const [showForm, setShowForm] = useState(false);
-  const [type, setType] = useState<"demo" | "oracle" | "clickhouse">("demo");
+  const [type, setType] = useState<ConnType>("demo");
   const [name, setName] = useState("");
   const [flavor, setFlavor] = useState("oracle");
   const [cfg, setCfg] = useState<Record<string, string>>({});
   const [model, setModel] = useState("");
+  // OKF
+  const [okfMode, setOkfMode] = useState<"url" | "paste">("url");
+  const [okfUrl, setOkfUrl] = useState("");
+  const [okfJson, setOkfJson] = useState("");
 
   const conns = state?.connections ?? [];
   const models = health?.llm.models ?? [];
 
   const add = async () => {
-    const config = type === "demo" ? { flavor } : cfg;
+    let config: Record<string, unknown> = {};
+    if (type === "demo") config = { flavor };
+    else if (type === "okf") {
+      if (okfMode === "url") config = { url: okfUrl.trim() };
+      else { try { config = { content: JSON.parse(okfJson) }; } catch { toast("err", "Invalid JSON"); return; } }
+    } else {
+      config = cfg;
+    }
     const r = await mutate((v) => api.addConnection({
-      name: name || (type === "demo" ? `Demo ${flavor}` : type), type, config,
-      llm_model: model || null,
+      name: name || (type === "demo" ? `Demo ${flavor}` : type === "okf" ? "Frictionless Package" : type),
+      type, config, llm_model: model || null,
     }, v));
     if (r) {
       toast("ok", "Connection added");
-      setShowForm(false); setName(""); setCfg({});
+      setShowForm(false); setName(""); setCfg({}); setOkfUrl(""); setOkfJson("");
     }
   };
 
@@ -51,8 +65,8 @@ export function Connections({ goto }: { goto: (t: Tab) => void }) {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <p className="max-w-2xl text-sm text-slate-500">
-          Connect an <b>Oracle</b> or <b>ClickHouse</b> warehouse, or start instantly with a
-          <b> Demo</b> source (synthetic realistic warehouse with intentionally overlapping values).
+          Connect a warehouse or import a <b>Frictionless Data Package</b> (OKF / datapackage.json).
+          Use <b>Demo</b> to explore with a synthetic dataset.
         </p>
         <button onClick={() => setShowForm((s) => !s)} className="btn-primary">
           <Plus size={16} /> New connection
@@ -61,8 +75,9 @@ export function Connections({ goto }: { goto: (t: Tab) => void }) {
 
       {showForm && (
         <div className="card animate-fade-in space-y-4 p-5">
-          <div className="grid grid-cols-3 gap-2">
-            {(["demo", "oracle", "clickhouse"] as const).map((t) => {
+          {/* type selector */}
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+            {(["demo", "oracle", "clickhouse", "okf"] as ConnType[]).map((t) => {
               const Mt = TYPE_META[t];
               const Icon = Mt.icon;
               return (
@@ -70,8 +85,9 @@ export function Connections({ goto }: { goto: (t: Tab) => void }) {
                   className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-medium ${
                     type === t ? "border-loom-500 bg-loom-500/10 text-loom-600 dark:text-loom-300"
                       : "border-slate-200 dark:border-slate-700"}`}>
-                  <Icon size={17} /> {Mt.label}
-                  {type === t && <Check size={15} className="ml-auto" />}
+                  <Icon size={16} />
+                  <span className="truncate">{Mt.label}</span>
+                  {type === t && <Check size={14} className="ml-auto shrink-0" />}
                 </button>
               );
             })}
@@ -81,7 +97,9 @@ export function Connections({ goto }: { goto: (t: Tab) => void }) {
             <label className="space-y-1">
               <span className="text-xs font-medium text-slate-500">Name</span>
               <input className="input" value={name} onChange={(e) => setName(e.target.value)}
-                placeholder={type === "demo" ? `Demo ${flavor}` : "My warehouse"} />
+                placeholder={
+                  type === "demo" ? `Demo ${flavor}` :
+                  type === "okf" ? "Frictionless Package" : "My warehouse"} />
             </label>
 
             {type === "demo" && (
@@ -113,16 +131,44 @@ export function Connections({ goto }: { goto: (t: Tab) => void }) {
               </>
             )}
 
-            <label className="space-y-1">
-              <span className="flex items-center gap-1 text-xs font-medium text-slate-500">
-                <Cpu size={12} /> LLM model (agents)
-              </span>
-              <select className="input" value={model} onChange={(e) => setModel(e.target.value)}>
-                <option value="">Default (qwen2.5-coder:7b)</option>
-                {models.map((m) => <option key={m} value={m}>{m}</option>)}
-              </select>
-            </label>
+            {type !== "okf" && (
+              <label className="space-y-1">
+                <span className="flex items-center gap-1 text-xs font-medium text-slate-500">
+                  <Cpu size={12} /> LLM model (agents)
+                </span>
+                <select className="input" value={model} onChange={(e) => setModel(e.target.value)}>
+                  <option value="">Default (qwen2.5-coder:7b)</option>
+                  {models.map((m) => <option key={m} value={m}>{m}</option>)}
+                </select>
+              </label>
+            )}
           </div>
+
+          {/* OKF-specific fields */}
+          {type === "okf" && (
+            <div className="space-y-3 rounded-lg border border-teal-200 bg-teal-50/30 p-4 dark:border-teal-800/40 dark:bg-teal-900/10">
+              <p className="text-xs text-slate-500">
+                Provide a <code className="rounded bg-slate-100 px-1 dark:bg-slate-800">datapackage.json</code> via URL or paste its content.
+                The Profiler agent will read field schemas and sample CSVs if accessible.
+              </p>
+              <div className="flex gap-1.5">
+                {(["url", "paste"] as const).map((m) => (
+                  <button key={m} onClick={() => setOkfMode(m)}
+                    className={`btn text-xs !py-1 !px-2.5 ${okfMode === m ? "btn-primary" : "btn-outline"}`}>
+                    {m === "url" ? <><Link2 size={13} /> URL</> : <><Package size={13} /> Paste JSON</>}
+                  </button>
+                ))}
+              </div>
+              {okfMode === "url" ? (
+                <input className="input text-sm" value={okfUrl} onChange={(e) => setOkfUrl(e.target.value)}
+                  placeholder="https://raw.githubusercontent.com/…/datapackage.json" />
+              ) : (
+                <textarea className="input min-h-[100px] font-mono text-xs" value={okfJson}
+                  onChange={(e) => setOkfJson(e.target.value)}
+                  placeholder={'{"name":"my-pkg","resources":[{"name":"orders","schema":{"fields":[{"name":"id","type":"integer"}]}}]}'} />
+              )}
+            </div>
+          )}
 
           <div className="flex justify-end gap-2">
             <button onClick={() => setShowForm(false)} className="btn-outline">Cancel</button>
@@ -133,11 +179,11 @@ export function Connections({ goto }: { goto: (t: Tab) => void }) {
 
       {conns.length === 0 && !showForm ? (
         <EmptyState icon={<Database size={48} />} title="No connections"
-          hint={<>Fastest start: create a <b>Demo</b> connection and run Magic Enrich.</>} />
+          hint={<>Create a <b>Demo</b> connection and run Magic Enrich, or connect a real warehouse.</>} />
       ) : (
         <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
           {conns.map((c) => {
-            const Mt = TYPE_META[c.type];
+            const Mt = TYPE_META[c.type] ?? TYPE_META.oracle;
             const Icon = Mt.icon;
             const dsCount = state?.datasets.filter((d) => d.connection_id === c.id).length ?? 0;
             return (

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import {
   ScanLine, GitCompare, BookOpen, Workflow, ShieldCheck, Tags, Bot,
-  Zap, Loader2, CheckCircle2, XCircle, Terminal, ShieldAlert,
+  Zap, Loader2, CheckCircle2, XCircle, Terminal, ShieldAlert, X,
 } from "lucide-react";
 import { useCatalog } from "../store";
 import { api } from "../api";
@@ -33,6 +33,11 @@ export function Agents() {
     if (!firstConn) { toast("err", "Add a connection first."); return; }
     const r = await mutate((v) => api.launchRun(firstConn.id, agentIds, v));
     if (r) { setActiveRun(r.run); toast("info", "Agents started"); }
+  };
+
+  const dismissQA = async (idx: number) => {
+    await mutate((v) => api.dismissQA(idx, v));
+    toast("ok", "Issue dismissed");
   };
 
   const qa = state?.qa_issues ?? [];
@@ -109,12 +114,16 @@ export function Agents() {
                 <span className="chip bg-slate-500/10 text-slate-500">{qaCounts.low} low</span>
               </span>
             </div>
-            <div className="max-h-64 space-y-1.5 overflow-auto">
-              {qa.slice(0, 40).map((i, k) => (
-                <div key={k} className="flex items-center gap-2 text-xs">
+            <div className="max-h-64 space-y-1 overflow-auto">
+              {qa.map((issue, k) => (
+                <div key={k} className="flex items-center gap-2 rounded-lg px-2 py-1 text-xs hover:bg-slate-50 dark:hover:bg-slate-800/60">
                   <span className={`h-2 w-2 shrink-0 rounded-full ${
-                    i.severity === "high" ? "bg-rose-500" : i.severity === "medium" ? "bg-amber-500" : "bg-slate-400"}`} />
-                  <span className="text-slate-500">{i.message}</span>
+                    issue.severity === "high" ? "bg-rose-500" : issue.severity === "medium" ? "bg-amber-500" : "bg-slate-400"}`} />
+                  <span className="flex-1 text-slate-500">{issue.message}</span>
+                  <button onClick={() => dismissQA(k)}
+                    className="text-slate-400 hover:text-rose-500 shrink-0" title="Dismiss">
+                    <X size={13} />
+                  </button>
                 </div>
               ))}
             </div>

@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import {
-  GitCompare, KeyRound, Check, X, Sparkles, ArrowRight, Grid3x3, Link2,
+  GitCompare, KeyRound, Check, X, Sparkles, ArrowRight, Grid3x3, Link2, Plus, Trash2,
 } from "lucide-react";
 import { useCatalog } from "../store";
 import { api } from "../api";
@@ -16,8 +16,13 @@ export function Relationships() {
   const matches = state?.matches ?? [];
 
   if (rels.length === 0 && matches.length === 0) {
-    return <EmptyState icon={<GitCompare size={48} />} title="No relationships detected"
-      hint="Run the Linker agent: it compares real values (MinHash + inclusion) to infer keys and identical fields." />;
+    return (
+      <div className="space-y-4">
+        <EmptyState icon={<GitCompare size={48} />} title="No relationships detected"
+          hint="Run the Linker agent, or add a relationship manually below." />
+        <AddRelForm />
+      </div>
+    );
   }
 
   return (
@@ -44,15 +49,24 @@ export function Relationships() {
 function KeysView() {
   const { state, mutate, toast } = useCatalog();
   const rels = state?.relationships ?? [];
+
   const setStatus = async (idx: number, status: string) => {
     await mutate((v) => api.setRelStatus(idx, status, v));
     toast("ok", status === "validated" ? "Relationship validated ✓" : "Relationship rejected");
   };
+  const del = async (idx: number) => {
+    if (!confirm("Delete this relationship?")) return;
+    await mutate((v) => api.deleteRelationship(idx, v));
+    toast("ok", "Relationship deleted");
+  };
+
   return (
     <div className="space-y-2">
       {rels.map((r, i) => (
         <div key={i} className={`card flex items-center gap-3 p-3.5 ${r.status === "rejected" ? "opacity-50" : ""}`}>
-          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-amber-500/10 text-amber-500"><KeyRound size={18} /></div>
+          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-amber-500/10 text-amber-500">
+            <KeyRound size={18} />
+          </div>
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
             <div className="flex min-w-0 items-center gap-1.5 text-sm">
               <span className="min-w-0 truncate font-mono">
@@ -64,6 +78,7 @@ function KeysView() {
                 <span className="text-slate-400">{shortDs(r.parent.dataset_id)}.</span>
                 <span className="font-semibold">{r.parent.column}</span>
               </span>
+              {(r as any).manual && <span className="chip bg-slate-500/10 text-slate-400 shrink-0">manual</span>}
             </div>
             <span className="truncate text-[11px] text-slate-400">{r.reason}</span>
           </div>
@@ -76,15 +91,98 @@ function KeysView() {
               <button onClick={() => setStatus(i, "rejected")} className="btn-ghost !p-1.5 text-rose-500" title="Reject"><X size={16} /></button>
             </div>
           )}
+          <button onClick={() => del(i)} className="btn-ghost !p-1.5 text-slate-400 hover:text-rose-500 shrink-0" title="Delete">
+            <Trash2 size={15} />
+          </button>
         </div>
       ))}
+      <AddRelForm />
+    </div>
+  );
+}
+
+function AddRelForm() {
+  const { state, mutate, toast } = useCatalog();
+  const [open, setOpen] = useState(false);
+  const [childDs, setChildDs] = useState("");
+  const [childCol, setChildCol] = useState("");
+  const [parentDs, setParentDs] = useState("");
+  const [parentCol, setParentCol] = useState("");
+  const [reason, setReason] = useState("");
+
+  const datasets = state?.datasets ?? [];
+  const colsOf = (dsId: string) => datasets.find((d) => d.id === dsId)?.columns.map((c) => c.name) ?? [];
+
+  const add = async () => {
+    if (!childDs || !childCol || !parentDs || !parentCol) { toast("err", "All fields are required"); return; }
+    await mutate((v) => api.addRelationship({ child_dataset_id: childDs, child_column: childCol,
+      parent_dataset_id: parentDs, parent_column: parentCol, reason }, v));
+    toast("ok", "Relationship added ✓"); setOpen(false);
+    setChildDs(""); setChildCol(""); setParentDs(""); setParentCol(""); setReason("");
+  };
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} className="btn-outline w-full justify-center">
+        <Plus size={15} /> Add relationship manually
+      </button>
+    );
+  }
+
+  return (
+    <div className="card animate-fade-in space-y-3 p-4">
+      <div className="text-sm font-semibold flex items-center gap-2">
+        <Plus size={15} className="text-loom-500" /> New relationship (FK)
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <label className="text-[10px] font-medium text-slate-400">Child table</label>
+          <select className="input text-xs" value={childDs} onChange={(e) => { setChildDs(e.target.value); setChildCol(""); }}>
+            <option value="">Select table…</option>
+            {datasets.map((d) => <option key={d.id} value={d.id}>{d.schema}.{d.name}</option>)}
+          </select>
+        </div>
+        <div className="space-y-1">
+          <label className="text-[10px] font-medium text-slate-400">Child column (FK)</label>
+          <select className="input text-xs" value={childCol} onChange={(e) => setChildCol(e.target.value)} disabled={!childDs}>
+            <option value="">Select column…</option>
+            {colsOf(childDs).map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div className="space-y-1">
+          <label className="text-[10px] font-medium text-slate-400">Parent table (PK source)</label>
+          <select className="input text-xs" value={parentDs} onChange={(e) => { setParentDs(e.target.value); setParentCol(""); }}>
+            <option value="">Select table…</option>
+            {datasets.map((d) => <option key={d.id} value={d.id}>{d.schema}.{d.name}</option>)}
+          </select>
+        </div>
+        <div className="space-y-1">
+          <label className="text-[10px] font-medium text-slate-400">Parent column (PK)</label>
+          <select className="input text-xs" value={parentCol} onChange={(e) => setParentCol(e.target.value)} disabled={!parentDs}>
+            <option value="">Select column…</option>
+            {colsOf(parentDs).map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+      </div>
+      <input className="input text-xs" value={reason} onChange={(e) => setReason(e.target.value)}
+        placeholder="Reason / description (optional)" />
+      <div className="flex gap-2">
+        <button onClick={add} className="btn-primary flex-1 justify-center"><Check size={14} /> Add</button>
+        <button onClick={() => setOpen(false)} className="btn-outline">Cancel</button>
+      </div>
     </div>
   );
 }
 
 function SameFieldView() {
-  const { state } = useCatalog();
+  const { state, mutate, toast } = useCatalog();
   const matches = state?.matches ?? [];
+
+  const dismiss = async (idx: number) => {
+    await mutate((v) => api.dismissMatch(idx, v));
+    toast("ok", "Match dismissed");
+  };
+
   return (
     <div className="grid gap-2.5 md:grid-cols-2">
       {matches.map((m, i) => (
@@ -95,11 +193,13 @@ function SameFieldView() {
             <span className="text-slate-400">≈</span>
             <span className="font-mono font-semibold">{m.b.column}</span>
             <span className={`ml-auto chip ${confidenceColor(m.confidence)} bg-current/10 font-mono`}>{m.confidence.toFixed(0)}%</span>
+            <button onClick={() => dismiss(i)} className="btn-ghost !p-1 text-slate-400 hover:text-rose-500" title="Dismiss">
+              <X size={14} />
+            </button>
           </div>
           <div className="mt-1 text-[11px] text-slate-400">
             {shortDs(m.a.dataset_id)} ↔ {shortDs(m.b.dataset_id)}
           </div>
-          {/* evidence bars */}
           <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
             <Bar label="value overlap" v={Math.max(m.containment_ab, m.containment_ba)} />
             <Bar label="Jaccard" v={m.value_jaccard} />
@@ -192,9 +292,7 @@ function HeatmapView() {
           </tbody>
         </table>
       </div>
-      <div className="mt-3 text-[11px] text-slate-400">
-        Darker blue = stronger link between tables.
-      </div>
+      <div className="mt-3 text-[11px] text-slate-400">Darker blue = stronger link between tables.</div>
     </div>
   );
 }
