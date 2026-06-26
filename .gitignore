@@ -6,3 +6,8 @@ server/__pycache__
 server/engine/__pycache__
 *.log
 .DS_Store
+# TypeScript incremental build cache
+*.tsbuildinfo
+# Vite / tsc build outputs
+vite.config.d.ts
+vite.config.js
