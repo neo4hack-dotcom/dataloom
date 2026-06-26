@@ -1,11 +1,5 @@
 """
-db.json-backed store with optimistic concurrency.
-
-The whole catalog lives in a single JSON document guarded by a monotonically
-increasing integer `version`. Mutating HTTP endpoints must send the version they
-last read in the `X-Base-Version` header; a mismatch -> HTTP 409 (handled in
-main.py). Every accepted mutation bumps the version and appends to an audit log
-(time-travel). A thread lock serializes writes (agents run in background threads).
+db.json-backed store with optimistic concurrency + full CRUD for all catalog elements.
 """
 from __future__ import annotations
 
@@ -18,19 +12,28 @@ from typing import Any
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "db.json")
 
+_EMPTY_PROFILE: dict[str, Any] = {
+    "row_count": 0, "null_ratio": 0.0, "distinct": 0, "distinct_ratio": 0.0,
+    "numeric": None, "semantic_type": "unknown", "semantic_confidence": 0.0,
+    "format_masks": [], "top_values": [], "is_key_candidate": False,
+    "quality_score": 0.0,
+    "quality_breakdown": {"completeness": 0.0, "uniqueness": 0.0, "validity": 0.0},
+    "sensitivity": "PUBLIC",
+}
+
 _DEFAULT: dict[str, Any] = {
     "version": 0,
     "connections": [],
-    "datasets": [],          # profiled tables (incl. column profiles)
-    "docs": {},              # dataset_id -> {definition, domain, columns:{...}}
-    "matches": [],           # same-field candidate pairs
-    "relationships": [],     # inferred PK/FK
-    "lineage": [],           # lineage edges
+    "datasets": [],
+    "docs": {},
+    "matches": [],
+    "relationships": [],
+    "lineage": [],
     "qa_issues": [],
     "glossary": [],
-    "model_notes": [],       # user free-text model/mapping explanations
-    "runs": [],              # agent run history (with logs)
-    "audit": [],             # time-travel log of mutations
+    "model_notes": [],
+    "runs": [],
+    "audit": [],
     "settings": {"llm_model": "qwen2.5-coder:7b", "theme": "dark"},
 }
 
@@ -88,6 +91,21 @@ class Store:
                     c["profile"].pop("_sample_hashes", None)
         return db
 
+    # -- reset --------------------------------------------------------------- #
+    def reset_catalog(self):
+        """Clear all catalog data, keeping connections and settings."""
+        with self._lock:
+            self._db["datasets"] = []
+            self._db["docs"] = {}
+            self._db["matches"] = []
+            self._db["relationships"] = []
+            self._db["lineage"] = []
+            self._db["qa_issues"] = []
+            self._db["glossary"] = []
+            self._db["model_notes"] = []
+            self._db["runs"] = []
+            self._bump("catalog.reset", "")
+
     # -- connections --------------------------------------------------------- #
     def add_connection(self, conn: dict[str, Any]):
         with self._lock:
@@ -115,6 +133,33 @@ class Store:
             self._db["datasets"] = list(by_id.values())
             self._bump("datasets.upsert", f"{len(datasets)} tables")
 
+    def add_manual_dataset(self, schema: str, name: str, conn_id: str,
+                           comment: str = "") -> dict[str, Any]:
+        with self._lock:
+            ds_id = f"{conn_id}::{schema}.{name}"
+            dataset = {
+                "id": ds_id, "connection_id": conn_id,
+                "schema": schema, "name": name, "kind": "table",
+                "row_estimate": 0, "comment": comment, "columns": [],
+                "manual": True,
+            }
+            by_id = {d["id"]: d for d in self._db["datasets"]}
+            by_id[ds_id] = dataset
+            self._db["datasets"] = list(by_id.values())
+            self._bump("dataset.add", ds_id)
+            return dataset
+
+    def delete_dataset(self, ds_id: str):
+        with self._lock:
+            self._db["datasets"] = [d for d in self._db["datasets"] if d["id"] != ds_id]
+            self._db["docs"].pop(ds_id, None)
+            self._db["relationships"] = [
+                r for r in self._db["relationships"]
+                if r["child"]["dataset_id"] != ds_id and r["parent"]["dataset_id"] != ds_id]
+            self._db["lineage"] = [
+                e for e in self._db["lineage"] if e["from"] != ds_id and e["to"] != ds_id]
+            self._bump("dataset.delete", ds_id)
+
     def datasets(self) -> list[dict[str, Any]]:
         return self._db["datasets"]
 
@@ -124,6 +169,40 @@ class Store:
             out.extend(d["columns"])
         return out
 
+    def add_manual_column(self, ds_id: str, col: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            for d in self._db["datasets"]:
+                if d["id"] == ds_id:
+                    pos = len(d["columns"]) + 1
+                    entry = {
+                        "name": col["name"],
+                        "data_type": col.get("data_type", "VARCHAR"),
+                        "nullable": col.get("nullable", True),
+                        "position": pos,
+                        "profile": copy.deepcopy(_EMPTY_PROFILE),
+                        "dataset_id": ds_id,
+                        "manual": True,
+                    }
+                    # Seed semantic type if provided
+                    if col.get("semantic_type"):
+                        entry["profile"]["semantic_type"] = col["semantic_type"]
+                    d["columns"].append(entry)
+                    self._bump("column.add", f"{ds_id}.{col['name']}")
+                    return entry
+            raise ValueError(f"Dataset {ds_id} not found")
+
+    def delete_column(self, ds_id: str, col_name: str):
+        with self._lock:
+            for d in self._db["datasets"]:
+                if d["id"] == ds_id:
+                    d["columns"] = [c for c in d["columns"] if c["name"] != col_name]
+                    doc = self._db["docs"].get(ds_id, {})
+                    if "columns" in doc:
+                        doc["columns"].pop(col_name, None)
+                    self._bump("column.delete", f"{ds_id}.{col_name}")
+                    return
+            raise ValueError(f"Dataset {ds_id} not found")
+
     def set_dataset_doc(self, ds_id: str, doc: dict[str, Any]):
         with self._lock:
             self._db["docs"][ds_id] = doc
@@ -131,6 +210,20 @@ class Store:
 
     def get_dataset_doc(self, ds_id: str) -> dict[str, Any] | None:
         return self._db["docs"].get(ds_id)
+
+    def update_dataset_meta(self, ds_id: str, patch: dict[str, Any]):
+        """Update table-level definition, domain, comment."""
+        with self._lock:
+            doc = self._db["docs"].setdefault(ds_id, {})
+            for k, v in patch.items():
+                if v is not None:
+                    doc[k] = v
+            # Also update comment on the dataset itself
+            for d in self._db["datasets"]:
+                if d["id"] == ds_id:
+                    if "comment" in patch:
+                        d["comment"] = patch["comment"]
+            self._bump("dataset.meta", ds_id)
 
     def update_column_doc(self, ds_id: str, col: str, patch: dict[str, Any]):
         with self._lock:
@@ -145,11 +238,25 @@ class Store:
         with self._lock:
             self._db["matches"] = m; self._bump("matches.set", str(len(m)))
 
+    def dismiss_match(self, idx: int):
+        with self._lock:
+            if 0 <= idx < len(self._db["matches"]):
+                self._db["matches"].pop(idx)
+                self._bump("match.dismiss", str(idx))
+
     def set_relationships(self, r):
         with self._lock:
             self._db["relationships"] = r; self._bump("rel.set", str(len(r)))
 
     def relationships(self): return self._db["relationships"]
+
+    def add_relationship(self, rel: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            rel.setdefault("status", "validated")
+            rel.setdefault("manual", True)
+            self._db["relationships"].append(rel)
+            self._bump("rel.add", f"{rel.get('child',{}).get('column')} -> {rel.get('parent',{}).get('column')}")
+            return rel
 
     def update_relationship_status(self, idx: int, status: str):
         with self._lock:
@@ -157,18 +264,59 @@ class Store:
                 self._db["relationships"][idx]["status"] = status
                 self._bump("rel.status", f"{idx}:{status}")
 
+    def delete_relationship(self, idx: int):
+        with self._lock:
+            if 0 <= idx < len(self._db["relationships"]):
+                r = self._db["relationships"].pop(idx)
+                self._bump("rel.delete", str(idx))
+
     def set_lineage(self, e):
         with self._lock:
             self._db["lineage"] = e; self._bump("lineage.set", str(len(e)))
+
+    def add_lineage_edge(self, edge: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            edge.setdefault("manual", True)
+            edge.setdefault("confidence", 100)
+            self._db["lineage"].append(edge)
+            self._bump("lineage.add", f"{edge.get('from')} -> {edge.get('to')}")
+            return edge
+
+    def delete_lineage_edge(self, idx: int):
+        with self._lock:
+            if 0 <= idx < len(self._db["lineage"]):
+                self._db["lineage"].pop(idx)
+                self._bump("lineage.delete", str(idx))
 
     def set_qa_issues(self, i):
         with self._lock:
             self._db["qa_issues"] = i; self._bump("qa.set", str(len(i)))
 
+    def dismiss_qa_issue(self, idx: int):
+        with self._lock:
+            if 0 <= idx < len(self._db["qa_issues"]):
+                self._db["qa_issues"].pop(idx)
+                self._bump("qa.dismiss", str(idx))
+
     # -- glossary / notes ---------------------------------------------------- #
     def glossary_def(self, term: str) -> str:
         return next((g["definition"] for g in self._db["glossary"]
                      if g["term"] == term and g.get("definition")), "")
+
+    def add_glossary_term(self, term: str, definition: str = "") -> dict[str, Any]:
+        with self._lock:
+            existing = {g["term"] for g in self._db["glossary"]}
+            if term in existing:
+                raise ValueError(f"Term '{term}' already exists")
+            entry = {"term": term, "definition": definition, "occurrences": 0, "columns": [], "manual": True}
+            self._db["glossary"].append(entry)
+            self._bump("glossary.add", term)
+            return entry
+
+    def delete_glossary_term(self, term: str):
+        with self._lock:
+            self._db["glossary"] = [g for g in self._db["glossary"] if g["term"] != term]
+            self._bump("glossary.delete", term)
 
     def merge_glossary(self, terms: list[dict[str, Any]]):
         with self._lock:
@@ -216,7 +364,7 @@ class Store:
                 if r["id"] == run_id:
                     r.update(patch)
                     break
-            self._flush()  # frequent, don't bump version (UI polls separately)
+            self._flush()
 
     def append_run_log(self, run_id: str, entry: dict[str, Any]):
         with self._lock:

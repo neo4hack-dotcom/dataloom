@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Workflow, Plus, StickyNote, Info } from "lucide-react";
+import { Workflow, Plus, StickyNote, Info, Trash2, Check, ArrowRight } from "lucide-react";
 import { useCatalog } from "../store";
 import { api } from "../api";
 import { EmptyState, shortDs } from "../lib/ui";
@@ -15,7 +15,6 @@ export function Lineage() {
 
   const datasets = state?.datasets ?? [];
   const edges = state?.lineage ?? [];
-
   const layout = useMemo(() => buildLayout(datasets.map((d) => d.id), edges), [datasets, edges]);
 
   const addNote = async () => {
@@ -25,16 +24,22 @@ export function Lineage() {
     toast("ok", "Note added — re-run the Lineage agent to integrate it.");
   };
 
+  const delEdge = async (idx: number) => {
+    await mutate((v) => api.deleteLineageEdge(idx, v));
+    toast("ok", "Edge deleted");
+  };
+
   if (datasets.length === 0) {
     return <EmptyState icon={<Workflow size={48} />} title="No lineage yet"
-      hint="Run the pipeline: the Lineage agent reconstructs chains from keys, mapping tables and your model notes." />;
+      hint="Run the pipeline, or add edges manually in the panel below." />;
   }
 
   const nameOf = (id: string) => datasets.find((d) => d.id === id)?.name ?? shortDs(id);
   const W = 920, H = Math.max(360, layout.height);
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[1fr_300px]">
+    <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
+      {/* SVG graph */}
       <div className="card overflow-hidden">
         <div className="flex items-center gap-2 border-b border-slate-200 px-4 py-2.5 dark:border-slate-800">
           <Workflow size={16} className="text-loom-500" />
@@ -43,7 +48,7 @@ export function Lineage() {
             {Object.entries(EDGE_COLOR).map(([k, c]) => (
               <span key={k} className="flex items-center gap-1 text-slate-400">
                 <span className="h-2 w-3 rounded" style={{ background: c }} />
-                {k === "key" ? "key" : k === "mapping" ? "mapping" : "note"}
+                {k === "key" ? "key" : k === "mapping" ? "mapping" : "manual"}
               </span>
             ))}
           </span>
@@ -58,7 +63,6 @@ export function Lineage() {
                 </marker>
               ))}
             </defs>
-            {/* edges */}
             {edges.map((e, i) => {
               const a = layout.nodes[e.from], b = layout.nodes[e.to];
               if (!a || !b) return null;
@@ -72,7 +76,6 @@ export function Lineage() {
                   markerEnd={`url(#arrow-${e.kind})`} opacity={dim ? 0.12 : 0.7} />
               );
             })}
-            {/* nodes */}
             {Object.entries(layout.nodes).map(([id, n]) => {
               const dim = hover && hover !== id && !edges.some((e) =>
                 (e.from === hover && e.to === id) || (e.to === hover && e.from === id));
@@ -92,8 +95,32 @@ export function Lineage() {
         </div>
       </div>
 
-      {/* notes panel */}
+      {/* Right panel */}
       <div className="space-y-4">
+        {/* Add edge form */}
+        <AddEdgePanel datasets={datasets} />
+
+        {/* Edge list */}
+        {edges.length > 0 && (
+          <div className="card p-4">
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">All edges ({edges.length})</div>
+            <div className="max-h-52 space-y-1 overflow-auto">
+              {edges.map((e, i) => (
+                <div key={i} className="flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs hover:bg-slate-100 dark:hover:bg-slate-800">
+                  <span className="h-2 w-2 rounded-full shrink-0" style={{ background: EDGE_COLOR[e.kind] }} />
+                  <span className="truncate font-mono text-slate-500">{nameOf(e.from)}</span>
+                  <ArrowRight size={11} className="shrink-0 text-slate-400" />
+                  <span className="truncate font-mono text-slate-500">{nameOf(e.to)}</span>
+                  <button onClick={() => delEdge(i)} className="ml-auto text-slate-400 hover:text-rose-500 shrink-0">
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Notes panel */}
         <div className="card p-4">
           <div className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
             <StickyNote size={15} className="text-emerald-500" /> Describe your model
@@ -101,12 +128,12 @@ export function Lineage() {
           <p className="mb-2 text-xs text-slate-400">
             Describe a chain with arrows. E.g.{" "}
             <code className="rounded bg-slate-100 px-1 dark:bg-slate-800">CUSTOMERS -&gt; DIM_CLIENT</code>.
-            The Lineage agent integrates them into the graph.
+            Re-run the Lineage agent to integrate.
           </p>
-          <textarea className="input min-h-[80px] font-mono text-xs" value={note}
+          <textarea className="input min-h-[60px] font-mono text-xs" value={note}
             onChange={(e) => setNote(e.target.value)}
             placeholder={"CUSTOMERS -> ORDERS -> ORDER_ITEMS\nMAP_COUNTRY -> DIM_CLIENT"} />
-          <button onClick={addNote} className="btn-primary mt-2 w-full justify-center"><Plus size={14} /> Add note</button>
+          <button onClick={addNote} className="btn-primary mt-2 w-full justify-center text-xs"><Plus size={14} /> Add note</button>
         </div>
 
         {(state?.model_notes.length ?? 0) > 0 && (
@@ -122,14 +149,76 @@ export function Lineage() {
 
         <div className="card flex items-start gap-2 p-3 text-xs text-slate-500">
           <Info size={14} className="mt-0.5 shrink-0 text-loom-500" />
-          {edges.length} edges reconstructed · {datasets.length} tables. Hover a node to isolate its dependencies.
+          {edges.length} edges · {datasets.length} tables. Hover a node to isolate dependencies.
         </div>
       </div>
     </div>
   );
 }
 
-// --- simple layered DAG layout -------------------------------------------- //
+function AddEdgePanel({ datasets }: { datasets: { id: string; schema: string; name: string }[] }) {
+  const { mutate, toast } = useCatalog();
+  const [open, setOpen] = useState(false);
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [via, setVia] = useState("");
+  const [kind, setKind] = useState<"manual" | "key" | "mapping">("manual");
+
+  const add = async () => {
+    if (!from || !to) { toast("err", "Select both tables"); return; }
+    if (from === to) { toast("err", "Source and target must differ"); return; }
+    await mutate((v) => api.addLineageEdge({ from_id: from, to_id: to, via, kind, confidence: 100 }, v));
+    toast("ok", "Lineage edge added ✓"); setOpen(false);
+    setFrom(""); setTo(""); setVia("");
+  };
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} className="btn-outline w-full justify-center text-xs">
+        <Plus size={14} /> Add lineage edge manually
+      </button>
+    );
+  }
+
+  return (
+    <div className="card animate-fade-in space-y-2 p-4">
+      <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide">New lineage edge</div>
+      <div className="space-y-1">
+        <label className="text-[10px] text-slate-400">Source (upstream)</label>
+        <select className="input text-xs" value={from} onChange={(e) => setFrom(e.target.value)}>
+          <option value="">Select source table…</option>
+          {datasets.map((d) => <option key={d.id} value={d.id}>{d.schema}.{d.name}</option>)}
+        </select>
+      </div>
+      <div className="space-y-1">
+        <label className="text-[10px] text-slate-400">Target (downstream)</label>
+        <select className="input text-xs" value={to} onChange={(e) => setTo(e.target.value)}>
+          <option value="">Select target table…</option>
+          {datasets.filter((d) => d.id !== from).map((d) => <option key={d.id} value={d.id}>{d.schema}.{d.name}</option>)}
+        </select>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div className="space-y-1">
+          <label className="text-[10px] text-slate-400">Via (key / join)</label>
+          <input className="input !py-1 text-xs" value={via} onChange={(e) => setVia(e.target.value)} placeholder="e.g. customer_id" />
+        </div>
+        <div className="space-y-1">
+          <label className="text-[10px] text-slate-400">Kind</label>
+          <select className="input !py-1 text-xs" value={kind} onChange={(e) => setKind(e.target.value as any)}>
+            <option value="manual">Manual</option>
+            <option value="key">Key</option>
+            <option value="mapping">Mapping</option>
+          </select>
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <button onClick={add} className="btn-primary flex-1 justify-center text-xs"><Check size={13} /> Add</button>
+        <button onClick={() => setOpen(false)} className="btn-outline text-xs">Cancel</button>
+      </div>
+    </div>
+  );
+}
+
 function buildLayout(ids: string[], edges: { from: string; to: string }[]) {
   const NODE_W = 150, NODE_H = 44, GAP_X = 200, GAP_Y = 16, PAD = 20;
   const adj = new Map<string, string[]>();

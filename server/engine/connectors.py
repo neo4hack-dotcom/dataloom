@@ -340,11 +340,145 @@ class ClickHouseConnector(Connector):
         return [r[0] for r in res.result_rows]
 
 
+# --------------------------------------------------------------------------- #
+#  OKF connector — Frictionless Data Package (Open Knowledge Foundation).     #
+#                                                                              #
+#  Reads a datapackage.json descriptor and exposes its resources as tables.   #
+#  Supports:  inline JSON (config.content), URL (config.url).                 #
+#  Attempts to read CSV data files for sample values (best-effort).           #
+# --------------------------------------------------------------------------- #
+
+_FRICTIONLESS_TYPE_MAP = {
+    "integer": "INTEGER", "number": "NUMBER", "boolean": "BOOLEAN",
+    "date": "DATE", "datetime": "TIMESTAMP", "time": "TIME",
+    "string": "VARCHAR", "array": "ARRAY", "object": "JSON",
+    "geojson": "JSON", "year": "INTEGER", "yearmonth": "VARCHAR",
+    "duration": "VARCHAR", "any": "VARCHAR",
+}
+
+
+class OKFConnector(Connector):
+    """
+    Frictionless Data Package connector.
+
+    Config keys (at least one required):
+      content  — dict   : the parsed datapackage.json content
+      url      — str    : URL to fetch the datapackage.json from
+      base_url — str    : base URL for resolving relative resource paths (optional)
+    """
+    kind = "okf"
+
+    def __init__(self, content: dict | None = None, url: str | None = None,
+                 base_url: str | None = None):
+        self._pkg: dict[str, Any] = {}
+        self._base_url = base_url or (url.rsplit("/", 1)[0] if url else "")
+        self._csv_cache: dict[str, list[list[str]]] = {}
+
+        if content:
+            self._pkg = content
+        elif url:
+            import httpx
+            r = httpx.get(url, timeout=15, follow_redirects=True)
+            r.raise_for_status()
+            self._pkg = r.json()
+        else:
+            raise ValueError("Either 'content' or 'url' must be provided")
+
+        self._resources = {
+            r["name"]: r for r in self._pkg.get("resources", []) if r.get("name")
+        }
+
+    def _schema_name(self) -> str:
+        return (self._pkg.get("name") or "okf").upper().replace("-", "_")[:30]
+
+    def list_tables(self) -> list[dict[str, Any]]:
+        out = []
+        for name, res in self._resources.items():
+            out.append({
+                "schema": self._schema_name(),
+                "name": name.upper().replace("-", "_"),
+                "kind": "table",
+                "row_estimate": 0,
+                "comment": res.get("description") or res.get("title"),
+            })
+        return out
+
+    def get_columns(self, schema: str, table: str) -> list[dict[str, Any]]:
+        res_name = table.lower().replace("_", "-")
+        # Try both forms
+        res = self._resources.get(res_name) or self._resources.get(table.lower())
+        if not res:
+            return []
+        fields = res.get("schema", {}).get("fields", [])
+        pk_set = set(res.get("schema", {}).get("primaryKey") or [])
+        out = []
+        for i, f in enumerate(fields):
+            dtype = _FRICTIONLESS_TYPE_MAP.get(f.get("type", "string"), "VARCHAR")
+            # String with format constraints → richer type hint
+            fmt = (f.get("constraints") or {}).get("format") or f.get("format")
+            if fmt == "email":
+                dtype = "VARCHAR (email)"
+            elif fmt == "uri":
+                dtype = "VARCHAR (url)"
+            out.append({
+                "name": f["name"],
+                "data_type": dtype,
+                "nullable": not (f.get("constraints") or {}).get("required", False),
+                "position": i + 1,
+                "comment": f.get("description") or f.get("title"),
+                "_is_pk": f["name"] in pk_set,
+            })
+        return out
+
+    def sample_values(self, schema: str, table: str, column: str, limit: int = 2000) -> list[Any]:
+        res_name = table.lower().replace("_", "-")
+        res = self._resources.get(res_name) or self._resources.get(table.lower())
+        if not res:
+            return []
+        path = res.get("path") or (res.get("paths") or [None])[0]
+        if not path:
+            return []
+        cache_key = f"{schema}.{table}"
+        if cache_key not in self._csv_cache:
+            self._csv_cache[cache_key] = self._read_csv(path)
+        rows = self._csv_cache[cache_key]
+        if not rows:
+            return []
+        headers = rows[0]
+        if column not in headers:
+            return []
+        idx = headers.index(column)
+        return [row[idx] for row in rows[1: limit + 1] if idx < len(row) and row[idx]]
+
+    def _read_csv(self, path: str) -> list[list[str]]:
+        import csv, io
+        url = path if path.startswith("http") else (
+            f"{self._base_url}/{path}" if self._base_url else path)
+        try:
+            if url.startswith("http"):
+                import httpx
+                r = httpx.get(url, timeout=10, follow_redirects=True)
+                r.raise_for_status()
+                text = r.text
+            else:
+                with open(url, encoding="utf-8") as f:
+                    text = f.read()
+            return list(csv.reader(io.StringIO(text)))
+        except Exception:
+            return []
+
+
 def build_connector(conn: dict[str, Any]) -> Connector:
     t = conn.get("type")
     cfg = conn.get("config", {})
     if t == "demo":
         return DemoConnector(flavor=cfg.get("flavor", "oracle"))
+    if t == "okf":
+        return OKFConnector(
+            content=cfg.get("content"),
+            url=cfg.get("url"),
+            base_url=cfg.get("base_url"),
+        )
     if t == "oracle":
         return OracleConnector(cfg["dsn"], cfg["user"], cfg["password"], cfg.get("schemas"))
     if t == "clickhouse":
