@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from typing import Any
 
 from store import Store
-from engine import llm, agents
+from engine import llm, agents, explore
 
 app = FastAPI(title="DataLoom API", version="1.0")
 app.add_middleware(
@@ -633,6 +633,146 @@ def _export_catalog_markdown(snap: dict) -> str:
                          f"{r['parent']['dataset_id']}.{r['parent']['column']} | {r['confidence']:.0f}% |")
         lines.append("")
     return "\n".join(lines)
+
+
+# -- guided exploration (5 local-LLM features) ------------------------------- #
+def _llm_model() -> str | None:
+    return store.snapshot()["settings"].get("llm_model")
+
+
+class SuggestColumnIn(BaseModel):
+    dataset_id: str
+    column: str
+
+
+@app.post("/api/llm/suggest-column")
+def llm_suggest_column(body: SuggestColumnIn):
+    """Feature 1 — evidence-grounded suggestion for a single column."""
+    snap = store.snapshot(trim=False)
+    try:
+        return {"ok": True, "suggestion": explore.suggest_column(
+            snap, body.dataset_id, body.column, model=_llm_model())}
+    except explore.LLMUnavailable:
+        raise HTTPException(503, "Local LLM unavailable")
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+class ApplyColumnIn(BaseModel):
+    dataset_id: str
+    column: str
+    definition: str | None = None
+    calculation: str | None = None
+    sensitivity: str | None = None
+    status: str = "validated"
+
+
+@app.post("/api/llm/apply-column")
+def llm_apply_column(body: ApplyColumnIn, x_base_version: int | None = Header(default=None)):
+    """Accept an LLM suggestion → write it into the column doc."""
+    guard(x_base_version)
+    patch: dict[str, Any] = {"source": "llm-suggested", "status": body.status, "confidence": 90}
+    if body.definition is not None:
+        patch["definition"] = body.definition
+    if body.calculation is not None:
+        patch["calculation"] = body.calculation
+    if body.sensitivity is not None:
+        patch["sensitivity"] = body.sensitivity
+    store.update_column_doc(body.dataset_id, body.column, patch)
+    return {"ok": True, "version": store.version}
+
+
+class DocumentTableIn(BaseModel):
+    dataset_id: str
+
+
+@app.post("/api/llm/document-table")
+def llm_document_table(body: DocumentTableIn):
+    """Feature 2 — document every column of a table in one call (preview, not applied)."""
+    snap = store.snapshot(trim=False)
+    try:
+        return {"ok": True, "result": explore.document_table(
+            snap, body.dataset_id, model=_llm_model())}
+    except explore.LLMUnavailable:
+        raise HTTPException(503, "Local LLM unavailable")
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+class ApplyTableIn(BaseModel):
+    dataset_id: str
+    table_definition: str | None = None
+    domain: str | None = None
+    columns: list[dict[str, Any]] = []
+
+
+@app.post("/api/llm/apply-table")
+def llm_apply_table(body: ApplyTableIn, x_base_version: int | None = Header(default=None)):
+    """Apply a reviewed table-documentation batch."""
+    guard(x_base_version)
+    meta: dict[str, Any] = {}
+    if body.table_definition is not None:
+        meta["definition"] = body.table_definition
+    if body.domain is not None:
+        meta["domain"] = body.domain
+    if meta:
+        store.update_dataset_meta(body.dataset_id, meta)
+    for c in body.columns:
+        name = c.get("name")
+        if not name:
+            continue
+        patch: dict[str, Any] = {"source": "llm-suggested", "status": "validated", "confidence": 88}
+        if c.get("definition"):
+            patch["definition"] = c["definition"]
+        if c.get("calculation"):
+            patch["calculation"] = c["calculation"]
+        if c.get("sensitivity"):
+            patch["sensitivity"] = c["sensitivity"]
+        store.update_column_doc(body.dataset_id, name, patch)
+    return {"ok": True, "version": store.version}
+
+
+class CopilotIn(BaseModel):
+    question: str
+    history: list[dict[str, Any]] = []
+
+
+@app.post("/api/llm/copilot")
+def llm_copilot(body: CopilotIn):
+    """Feature 3 — conversational Q&A grounded in the catalog."""
+    snap = store.snapshot()
+    try:
+        return {"ok": True, **explore.copilot(snap, body.question, body.history, model=_llm_model())}
+    except explore.LLMUnavailable:
+        raise HTTPException(503, "Local LLM unavailable")
+
+
+@app.get("/api/llm/completion-queue")
+def llm_completion_queue():
+    """Feature 4 — impact-ranked next-best-action gaps (deterministic, instant)."""
+    snap = store.snapshot()
+    return {"ok": True, "items": explore.completion_queue(snap)}
+
+
+class ExplainRelIn(BaseModel):
+    child_dataset_id: str
+    child_column: str
+    parent_dataset_id: str
+    parent_column: str
+
+
+@app.post("/api/llm/explain-relationship")
+def llm_explain_relationship(body: ExplainRelIn):
+    """Feature 5 — plain-business meaning + cardinality of an inferred link."""
+    snap = store.snapshot(trim=False)
+    try:
+        return {"ok": True, "explanation": explore.explain_relationship(
+            snap, body.child_dataset_id, body.child_column,
+            body.parent_dataset_id, body.parent_column, model=_llm_model())}
+    except explore.LLMUnavailable:
+        raise HTTPException(503, "Local LLM unavailable")
+    except ValueError as e:
+        raise HTTPException(404, str(e))
 
 
 # -- static file serving (production build) ---------------------------------- #
