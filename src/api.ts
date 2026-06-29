@@ -1,4 +1,4 @@
-import type { AgentRun, CatalogState, Connection, Health } from "./types";
+import type { AgentRun, CatalogState, Connection, Health, LlmConfig, LlmTest } from "./types";
 
 export class VersionConflict extends Error {
   serverVersion: number;
@@ -152,6 +152,22 @@ export const api = {
   // -- reset --
   resetCatalog: (baseVersion: number) =>
     req<{ ok: boolean; version: number }>("/reset", { method: "POST", baseVersion }),
+
+  // -- LLM configuration (OpenAI-compatible) --
+  saveLlmConfig: (
+    body: { base_url?: string; api_key?: string; model?: string; temperature?: number; max_tokens?: number },
+    baseVersion: number
+  ) => req<{ ok: boolean; version: number; config: LlmConfig }>("/llm/config", {
+    method: "POST", body: JSON.stringify(body), baseVersion,
+  }),
+  testLlm: (draft?: { base_url?: string; api_key?: string; model?: string }) =>
+    req<{ ok: boolean; result: LlmTest }>("/llm/test", {
+      method: "POST", body: JSON.stringify(draft ?? {}),
+    }),
+  listLlmModels: (draft?: { base_url?: string; api_key?: string }) =>
+    req<{ ok: boolean; models: string[] }>("/llm/models", {
+      method: "POST", body: JSON.stringify(draft ?? {}),
+    }),
 
   // -- guided exploration (5 local-LLM features) --
   suggestColumn: (dataset_id: string, column: string) =>

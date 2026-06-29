@@ -34,7 +34,17 @@ _DEFAULT: dict[str, Any] = {
     "model_notes": [],
     "runs": [],
     "audit": [],
-    "settings": {"llm_model": "qwen2.5-coder:7b", "theme": "dark"},
+    "settings": {
+        "theme": "dark",
+        "llm": {
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key": "",
+            "model": "qwen2.5-coder:7b",
+            "temperature": 0.2,
+            "max_tokens": 2048,
+            "last_test": None,
+        },
+    },
 }
 
 
@@ -52,10 +62,26 @@ class Store:
                     db = json.load(f)
                 for k, v in _DEFAULT.items():
                     db.setdefault(k, copy.deepcopy(v))
+                self._migrate_settings(db)
                 return db
             except Exception:
                 pass
         return copy.deepcopy(_DEFAULT)
+
+    @staticmethod
+    def _migrate_settings(db: dict[str, Any]) -> None:
+        """Ensure settings.llm exists; migrate legacy settings.llm_model → llm.model."""
+        s = db.setdefault("settings", {})
+        llm = s.get("llm")
+        if not isinstance(llm, dict):
+            llm = copy.deepcopy(_DEFAULT["settings"]["llm"])
+            if s.get("llm_model"):
+                llm["model"] = s["llm_model"]
+            s["llm"] = llm
+        else:
+            for k, v in _DEFAULT["settings"]["llm"].items():
+                llm.setdefault(k, v)
+        s.pop("llm_model", None)
 
     def _flush(self):
         tmp = self.path + ".tmp"
@@ -89,6 +115,11 @@ class Store:
                 for c in d["columns"]:
                     c["profile"].pop("_minhash", None)
                     c["profile"].pop("_sample_hashes", None)
+            # never expose the LLM api_key to the client; surface a boolean flag
+            llm = db.get("settings", {}).get("llm")
+            if isinstance(llm, dict):
+                llm["api_key_set"] = bool(llm.get("api_key"))
+                llm.pop("api_key", None)
         return db
 
     # -- reset --------------------------------------------------------------- #
@@ -385,3 +416,25 @@ class Store:
         with self._lock:
             self._db["settings"].update(patch)
             self._bump("settings", "")
+
+    @property
+    def llm_config(self) -> dict[str, Any]:
+        return self._db["settings"].get("llm", {})
+
+    def update_llm_config(self, patch: dict[str, Any]):
+        """Merge a partial LLM config. Empty api_key is ignored (keep existing)."""
+        with self._lock:
+            llm = self._db["settings"].setdefault("llm", {})
+            for k in ("base_url", "model", "temperature", "max_tokens"):
+                if k in patch and patch[k] is not None:
+                    llm[k] = patch[k]
+            # only overwrite api_key when a non-empty value is provided
+            if patch.get("api_key"):
+                llm["api_key"] = patch["api_key"]
+            self._bump("settings.llm", f"{llm.get('base_url')} / {llm.get('model') or '(default)'}")
+            return llm
+
+    def set_llm_last_test(self, result: dict[str, Any]):
+        with self._lock:
+            self._db["settings"].setdefault("llm", {})["last_test"] = result
+            self._flush()  # not version-bumping (transient diagnostic)
