@@ -192,9 +192,9 @@ export const api = {
     req<{ ok: boolean; version: number }>("/llm/apply-table", {
       method: "POST", body: JSON.stringify(body), baseVersion,
     }),
-  copilot: (question: string, history: { role: string; content: string }[]) =>
+  copilot: (question: string, history: { role: string; content: string }[], librarian = false) =>
     req<{ ok: boolean; answer: string; cited: { dataset_id: string; column: string }[] }>("/llm/copilot", {
-      method: "POST", body: JSON.stringify({ question, history }),
+      method: "POST", body: JSON.stringify({ question, history, librarian }),
     }),
   completionQueue: () =>
     req<{ ok: boolean; items: CompletionItem[] }>("/llm/completion-queue"),

@@ -1,61 +1,75 @@
-# 🧵 DataLoom — Autonomous Data Catalog
+# 🧵 DOINg.Catalogue — Autonomous Data Catalogue
 
-Crée, gère et **maintient automatiquement** le dictionnaire de ton data warehouse
-**Oracle** ou **ClickHouse**. DataLoom *profile* tes données, *infère* les liens entre
-tables par tests de valeurs réels, et *enrichit* le catalogue avec des **agents LLM locaux**
-(Ollama) — pour reconstruire tes chaînes d'information en quasi-autonomie.
+Create, manage and **automatically maintain** the data dictionary of your
+**Oracle** or **ClickHouse** warehouse — and let anyone, technical or not, find
+and understand that data. DOINg.Catalogue *profiles* your data, *infers* the links
+between tables from real value tests, and *enriches* the catalogue with **local
+LLM agents** (any OpenAI-compatible server) — fully offline.
 
-> Un clic sur **Magic Enrich** → profilage → détection de clés → documentation LLM →
-> lineage → audit qualité → glossaire. Le tout offline.
+> One click on **Magic Enrich** → profiling → key detection → LLM documentation →
+> lineage → quality audit → glossary. Then open the **Library** and just *ask*.
 
 ---
 
-## ✨ Ce qui fait l'effet « wow »
+## ✨ Why it stands out
 
-Le moteur ne se contente pas de lire les métadonnées : il **regarde les valeurs**.
+The engine doesn't just read metadata — it **looks at the values**.
 
-| Technique | Résultat |
+| Technique | What it gives you |
 |---|---|
-| **MinHash + Jaccard** (k-MV sketch) | overlap de valeurs entre 2 champs sans tout comparer |
-| **Inclusion dependency** `\|A∩B\|/\|A\|` | détection automatique des clés **PK → FK** |
-| **Format-mask fingerprint** | `FR76…` → `AAdd…`, repère les colonnes de même *forme* |
-| **Semantic profiling** (regex) | email, IBAN, SIRET, UUID, IP, date, devise, code… |
-| **Data-quality score** | complétude × unicité × validité (0–100) |
-| **PII / sensibilité** | classification automatique des champs sensibles |
-| **Agents LLM locaux** | définitions fonctionnelles + méthodes de calcul, avec score de confiance |
+| **MinHash + Jaccard** (k-MV sketch) | value overlap between two fields without comparing everything |
+| **Inclusion dependency** `\|A∩B\|/\|A\|` | automatic **PK → FK** key detection |
+| **Format-mask fingerprint** | `FR76…` → `AAdd…`, spots columns of the same *shape* |
+| **Semantic profiling** (regex) | email, IBAN, SIRET, UUID, IP, date, currency, code… |
+| **Data-quality score** | completeness × uniqueness × validity (0–100) |
+| **PII / sensitivity** | automatic flagging of sensitive fields |
+| **Evidence-grounded LLM** | every AI suggestion cites the real signals it used — verifiable, not hallucinated |
 
-Sur la source de démo, DataLoom retrouve **seul** :
+On the demo source, DOINg.Catalogue finds **on its own**:
 - `orders.customer_id → customers.customer_id` (FK, 100 %)
-- `payments.cust_ref ≈ customers.customer_id` (même champ, **nom différent**, 91 %)
-- `country_code ≈ code_pays` (même champ, **langue différente**)
-- `customer_id → dim_client.id_client` (mapping d'étoile pour le lineage)
+- `payments.cust_ref ≈ customers.customer_id` (same field, **different name**, 91 %)
+- `country_code ≈ code_pays` (same field, **different language**)
+- `customer_id → dim_client.id_client` (star-schema mapping, for lineage)
 
-## 🧠 Les 18 fonctionnalités
+## 🗂️ The two ways to use it
 
-1. Pipeline **Magic Enrich** en 1 clic  · 2. 6 agents pré-construits orchestrés ·
-3. Console d'agents **en temps réel** · 4. Score de confiance + **preuve** sur chaque inférence ·
-5. Workflow de validation (suggéré → validé → rejeté) · 6. Détection « même champ » par **test de valeurs** ·
-7. Graphe de **lineage SVG** · 8. **Recherche en langage naturel** (LLM) · 9. **Command palette** (⌘K) ·
-10. Dashboard de santé · 11. Détection de PII · 12. **Glossaire métier** lié aux colonnes ·
-13. Concurrence optimiste (`X-Base-Version` → 409) · 14. **Audit / time-travel** ·
-15. Export **Markdown / JSON** · 16. **Heatmap** de connectivité · 17. Notes de modèle → lineage ·
-18. Source **démo** synthétique aux valeurs chevauchantes.
+**Build the catalogue** (data team): Connections → Catalog → Explorer → Relationships → Lineage → Agents.
+**Consume the catalogue** (everyone): the **Library** — browse your data in plain language and ask the **Librarian** chatbot.
 
-## 🏗️ Architecture
+## 🧠 Feature tour
 
-```
-Frontend  React 19 · TS 5.8 strict · Tailwind 3.4 (dark) · Vite 6 · charts SVG purs
-          src/App.tsx (tabs) · store.tsx (state+concurrence) · views/* · lib/ui.tsx
-Backend   FastAPI · Uvicorn :3001 · persistance db.json
-          engine/connectors.py  (Oracle / ClickHouse / Demo)
-          engine/profiling.py   (empreintes MinHash, types sémantiques, qualité)
-          engine/similarity.py  (Jaccard, inclusion, PK/FK)
-          engine/agents.py      (6 agents + orchestrateur)
-          engine/llm.py         (Ollama, fallback heuristique)
-LLM       Ollama local (qwen2.5-coder:7b par défaut)
-```
+### Autonomous engine & agents
+- **Magic Enrich** one-click pipeline; 6 pre-built agents (Profiler, Linker, Documenter, Lineage, QA, Glossary) orchestrated, with a live console.
+- Confidence score **+ evidence** on every inference; suggested → validated → rejected workflow.
+- Lineage graph (pure SVG) rebuilt from keys, mapping tables and your model notes.
 
-## 🚀 Démarrage
+### Guided Explorer — 5 local-LLM features (evidence-grounded)
+1. **Column suggestion** — definition + calculation + type + PII + confidence + cited evidence, one-click accept.
+2. **Auto-document table** — every column in one call, review then apply.
+3. **Catalog Copilot** — conversational RAG over the catalogue, cites real columns.
+4. **Next Best Action** — impact-ranked worklist of the gaps to close first.
+5. **Explain relationship** — plain-business meaning + cardinality of an inferred link.
+
+### 🆕 Data Library + Librarian (for non-technical users)
+- **Browse by topic** — tables grouped by business domain, described in plain language, friendly field types (Identifier, Email, Amount, Date, Yes/No…) instead of `VARCHAR2`.
+- **Reader pages** — what's inside a table, how it connects ("Each row connects to one Customer"), and the related business terms — no jargon.
+- **The Librarian** — a RAG chatbot that answers any question from your catalogue and links straight to the right table. *"Where can I find customer email addresses?"*
+
+### Import / export
+- **OKF / Frictionless Data**: import a `datapackage.json` (URL or paste) — schemas, field descriptions and declared foreign keys; **export** the catalogue back to `datapackage.json`.
+- Export the dictionary as **Markdown handbook**, **JSON**, or **OKF**; export app config separately.
+
+### Everything is editable
+Manual CRUD on tables, columns, relationships, lineage edges, glossary terms and QA issues — enrich or correct anything the engine produced.
+
+## ⚙️ Configurable local LLM (OpenAI-compatible)
+
+Settings → **Local LLM**: one-click presets (**Ollama / LM Studio / vLLM / llama.cpp**),
+base URL, optional API key, **model discovery**, temperature, and a **Test connection**
+button with latency. Any server exposing `/v1/chat/completions` + `/v1/models` works.
+If the LLM is offline, agents fall back to heuristics — the app stays usable.
+
+## 🚀 Getting started
 
 ```bash
 # 1) Backend (port 3001)
@@ -68,17 +82,42 @@ npm install
 npm run dev
 ```
 
-Puis ouvre http://localhost:3000 → **Connexions** → crée une connexion **Démo** →
-**Magic Enrich**. (Ou `npm start` lance les deux ensemble.)
+Open http://localhost:3000 → **Connections** → create a **Demo** connection →
+**Magic Enrich**. Then open the **Library** and ask the Librarian. (`npm start` runs both.)
 
-### Brancher un vrai entrepôt
+### Production (single origin)
+```bash
+npm run build                                  # builds dist/
+cd server && ./.venv/bin/uvicorn main:app --port 3001   # serves API *and* the SPA
+# open http://localhost:3001
+```
+The backend serves `dist/` (SPA fallback) while `/api/*` keeps priority.
+
+### Connect a real warehouse
 ```bash
 ./.venv/bin/pip install oracledb            # Oracle
 ./.venv/bin/pip install clickhouse-connect  # ClickHouse
 ```
-Puis renseigne DSN / host dans l'écran **Connexions**. Toutes les requêtes sont en
-lecture seule (`all_tables`, `system.columns`, `SELECT … FETCH FIRST n`).
+Then fill in the DSN / host in **Connections**. All queries are read-only.
 
-## 🔌 LLM local
-DataLoom interroge Ollama sur `localhost:11434`. Sélectionne le modèle dans **Réglages**.
-Si Ollama est absent, les agents basculent sur des heuristiques — l'app reste 100 % utilisable.
+## 🏗️ Architecture
+
+```
+Frontend  React 19 · TS 5.8 strict · Tailwind 3.4 (dark) · Vite 6 · pure-SVG charts
+          src/App.tsx (tabs) · store.tsx (state + optimistic concurrency) · views/* · lib/ui.tsx
+Backend   FastAPI · Uvicorn :3001 · db.json persistence
+          engine/connectors.py  (Oracle / ClickHouse / Demo / OKF)
+          engine/profiling.py   (MinHash fingerprints, semantic types, quality)
+          engine/similarity.py  (Jaccard, inclusion, PK/FK)
+          engine/agents.py      (6 agents + orchestrator)
+          engine/explore.py     (5 evidence-grounded LLM features + RAG copilot/librarian)
+          engine/llm.py         (OpenAI-compatible client, configurable)
+LLM       Any OpenAI-compatible server (Ollama default: qwen2.5-coder:7b)
+```
+
+Concurrency: every mutation bumps a version; clients send `X-Base-Version` → HTTP 409
+on conflict. Secrets (LLM api_key) never leave the server.
+
+## 🔒 Notes
+- 100 % offline-capable: system fonts, no CDN, local LLM.
+- The LLM `api_key` is redacted from all API responses (only an `api_key_set` flag is exposed).
