@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Cpu, Download, FileJson, FileText, History, Check, Server,
   Table2, AppWindow, Package, RotateCcw, AlertTriangle, Upload, Link2,
+  RefreshCw, Zap, Loader2, Gauge,
 } from "lucide-react";
 import { useCatalog } from "../store";
 import { api } from "../api";
@@ -10,24 +11,74 @@ import { timeAgo } from "../lib/ui";
 type ExportTarget = "catalog" | "app" | "full";
 
 export function SettingsView() {
-  const { state, health, mutate, toast } = useCatalog();
-  const [model, setModel] = useState(state?.settings.llm_model ?? "");
+  const { state, health, refresh, mutate, toast } = useCatalog();
   const [resetConfirm, setResetConfirm] = useState(false);
+
+  // -- LLM configuration (OpenAI-compatible) --
+  const cfg = health?.llm.config;
+  const [baseUrl, setBaseUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [model, setModel] = useState("");
+  const [temperature, setTemperature] = useState(0.2);
+  const [maxTokens, setMaxTokens] = useState(2048);
+  const [models, setModels] = useState<string[]>([]);
+  const [busy, setBusy] = useState<"" | "save" | "test" | "models">("");
+
+  // hydrate the form once health/config arrives
+  useEffect(() => {
+    if (!cfg) return;
+    setBaseUrl((b) => b || cfg.base_url);
+    setModel((m) => m || cfg.model);
+    setTemperature(cfg.temperature);
+    setMaxTokens(cfg.max_tokens);
+    setModels(health?.llm.models ?? []);
+  }, [cfg?.base_url, cfg?.model]); // eslint-disable-line
+
+  const presets = health?.llm.presets ?? [];
+  const lastTest = health?.llm.last_test;
+
+  const draft = () => ({ base_url: baseUrl.trim(), model: model.trim(), ...(apiKey ? { api_key: apiKey } : {}) });
+
+  const saveLlm = async () => {
+    setBusy("save");
+    try {
+      await mutate((v) => api.saveLlmConfig({
+        base_url: baseUrl.trim(), model: model.trim(),
+        temperature, max_tokens: maxTokens, ...(apiKey ? { api_key: apiKey } : {}),
+      }, v));
+      setApiKey("");
+      toast("ok", "LLM settings saved");
+    } finally { setBusy(""); }
+  };
+
+  const testLlm = async () => {
+    setBusy("test");
+    try {
+      const r = await api.testLlm(draft());
+      await refresh();
+      toast(r.result.ok ? "ok" : "err", r.result.message);
+    } catch (e) {
+      toast("err", (e as Error).message);
+    } finally { setBusy(""); }
+  };
+
+  const loadModels = async () => {
+    setBusy("models");
+    try {
+      const r = await api.listLlmModels({ base_url: baseUrl.trim(), ...(apiKey ? { api_key: apiKey } : {}) });
+      setModels(r.models);
+      if (r.models.length && !r.models.includes(model)) setModel(r.models[0]);
+      toast(r.models.length ? "ok" : "err", `${r.models.length} model(s) found`);
+    } catch (e) {
+      toast("err", (e as Error).message);
+    } finally { setBusy(""); }
+  };
 
   // OKF import state
   const [okfMode, setOkfMode] = useState<"url" | "json">("url");
   const [okfUrl, setOkfUrl] = useState("");
   const [okfJson, setOkfJson] = useState("");
   const [okfLoading, setOkfLoading] = useState(false);
-
-  const saveModel = async () => {
-    await mutate((v) => fetch("/api/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Base-Version": String(v) },
-      body: JSON.stringify({ patch: { llm_model: model } }),
-    }).then((r) => r.json()));
-    toast("ok", "Default model saved");
-  };
 
   const doExport = async (target: ExportTarget, fmt: "markdown" | "json" | "okf") => {
     let result: { content: unknown; filename: string };
@@ -73,22 +124,98 @@ export function SettingsView() {
     <div className="mx-auto max-w-3xl space-y-5">
       {/* LLM */}
       <div className="card p-5">
-        <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
-          <Cpu size={16} className="text-loom-500" /> Local LLM (Ollama)
+        <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
+          <Cpu size={16} className="text-loom-500" /> Local LLM
+          <span className="text-xs font-normal text-slate-400">— any OpenAI-compatible API</span>
+          <span className="ml-auto flex items-center gap-2">
+            {lastTest && (
+              <span className={`chip ${lastTest.ok ? "bg-emerald-500/10 text-emerald-500" : "bg-rose-500/10 text-rose-500"}`}>
+                <Zap size={11} /> {lastTest.ok ? `OK · ${lastTest.latency_ms.toFixed(0)} ms` : "failed"}
+              </span>
+            )}
+            <span className={`flex items-center gap-1 text-xs ${health?.llm.up ? "text-emerald-500" : "text-rose-500"}`}>
+              <Server size={13} /> {health?.llm.up ? "reachable" : "offline"}
+            </span>
+          </span>
         </div>
-        <div className="flex items-center gap-2 rounded-lg bg-slate-100 p-3 text-sm dark:bg-slate-800">
-          <Server size={15} className={health?.llm.up ? "text-emerald-500" : "text-rose-500"} />
-          <span>{health?.llm.up ? "Connected" : "Offline"} · localhost:11434</span>
-          <span className="ml-auto text-xs text-slate-400">{health?.llm.models.length ?? 0} models</span>
+        <p className="mb-3 text-xs text-slate-400">Ollama, LM Studio, vLLM, llama.cpp… — runs fully offline.</p>
+
+        {/* provider presets */}
+        <div className="mb-3 flex flex-wrap gap-1.5">
+          {presets.map((p) => (
+            <button key={p.name} onClick={() => setBaseUrl(p.base_url)}
+              className={`chip border ${baseUrl === p.base_url
+                ? "border-loom-500 bg-loom-500/10 text-loom-600 dark:text-loom-300"
+                : "border-slate-200 text-slate-500 hover:border-loom-400 dark:border-slate-700"}`}>
+              {p.name}
+            </button>
+          ))}
         </div>
-        <div className="mt-3 flex items-end gap-2">
-          <label className="flex-1 space-y-1">
-            <span className="text-xs font-medium text-slate-500">Default agent model</span>
-            <select className="input" value={model} onChange={(e) => setModel(e.target.value)}>
-              {(health?.llm.models ?? []).map((m) => <option key={m} value={m}>{m}</option>)}
-            </select>
+
+        <div className="space-y-3">
+          <label className="block space-y-1">
+            <span className="text-xs font-medium text-slate-500">Base URL (OpenAI-compatible)</span>
+            <input className="input font-mono text-xs" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder="http://127.0.0.1:11434/v1" />
           </label>
-          <button onClick={saveModel} className="btn-primary"><Check size={15} /> Save</button>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-slate-500">
+                API key {cfg?.api_key_set && <span className="text-slate-400">· saved</span>}
+              </span>
+              <input className="input" type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)}
+                placeholder={cfg?.api_key_set ? "••••••••  (type to replace)" : "(usually none locally)"} />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-slate-500">Model</span>
+              <div className="flex gap-1.5">
+                {models.length > 0 ? (
+                  <select className="input" value={model} onChange={(e) => setModel(e.target.value)}>
+                    {models.map((m) => <option key={m} value={m}>{m}</option>)}
+                    {!models.includes(model) && model && <option value={model}>{model}</option>}
+                  </select>
+                ) : (
+                  <input className="input font-mono text-xs" value={model} onChange={(e) => setModel(e.target.value)}
+                    placeholder="qwen2.5-coder:7b" />
+                )}
+                <button onClick={loadModels} disabled={busy === "models"}
+                  className="btn-outline shrink-0 !px-2.5" title="List the server's models">
+                  {busy === "models" ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
+                </button>
+              </div>
+            </label>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="space-y-1">
+              <span className="flex items-center gap-1 text-xs font-medium text-slate-500">
+                <Gauge size={12} /> Temperature: <span className="font-mono">{temperature.toFixed(2)}</span>
+              </span>
+              <input type="range" min={0} max={1} step={0.05} value={temperature}
+                onChange={(e) => setTemperature(parseFloat(e.target.value))}
+                className="w-full accent-loom-600" />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-slate-500">Max tokens</span>
+              <input className="input" type="number" value={maxTokens}
+                onChange={(e) => setMaxTokens(parseInt(e.target.value, 10) || 2048)} />
+            </label>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {lastTest && (
+              <span className="flex-1 truncate text-[11px] text-slate-400" title={lastTest.message}>
+                {lastTest.message}
+              </span>
+            )}
+            <button onClick={testLlm} disabled={busy === "test"} className="btn-outline ml-auto">
+              {busy === "test" ? <Loader2 size={15} className="animate-spin" /> : <Cpu size={15} />} Test connection
+            </button>
+            <button onClick={saveLlm} disabled={busy === "save"} className="btn-primary">
+              {busy === "save" ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} Save
+            </button>
+          </div>
         </div>
       </div>
 

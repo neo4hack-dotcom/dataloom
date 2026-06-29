@@ -23,6 +23,9 @@ app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 store = Store()
 
+# Apply the persisted LLM configuration to the client at startup.
+llm.configure(store.llm_config)
+
 _DIST = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "dist"))
 
 
@@ -37,8 +40,16 @@ def guard(base_version: int | None):
 # --------------------------------------------------------------------------- #
 @app.get("/api/health")
 def health():
+    cfg = store.llm_config
+    up = llm.is_up()
     return {"ok": True, "version": store.version,
-            "llm": {"up": llm.is_up(), "models": llm.list_models()},
+            "llm": {
+                "up": up,
+                "models": llm.list_models() if up else [],
+                "config": llm.current_config(redact=True),
+                "presets": llm.PRESETS,
+                "last_test": cfg.get("last_test"),
+            },
             "agents": [{"id": a.id, "name": a.name, "icon": a.icon, "desc": a.desc}
                        for a in agents.AGENTS.values()],
             "pipeline": agents.PIPELINE}
@@ -387,6 +398,46 @@ def settings(body: SettingsIn, x_base_version: int | None = Header(default=None)
     return {"ok": True, "version": store.version}
 
 
+# -- LLM configuration (OpenAI-compatible: Ollama / LM Studio / vLLM / llama.cpp) -- #
+class LlmConfigIn(BaseModel):
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+
+
+@app.post("/api/llm/config")
+def save_llm_config(body: LlmConfigIn, x_base_version: int | None = Header(default=None)):
+    """Persist + apply the local LLM configuration."""
+    guard(x_base_version)
+    patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    store.update_llm_config(patch)
+    llm.configure(store.llm_config)
+    return {"ok": True, "version": store.version, "config": llm.current_config(redact=True)}
+
+
+@app.post("/api/llm/test")
+def test_llm_config(body: LlmConfigIn | None = None):
+    """Ping the LLM (optionally with an unsaved draft config) and store the result."""
+    draft = {k: v for k, v in (body.model_dump() if body else {}).items() if v is not None} if body else {}
+    # api_key absent from draft → fall back to the saved one
+    if "api_key" not in draft and store.llm_config.get("api_key"):
+        draft["api_key"] = store.llm_config["api_key"]
+    result = llm.test(draft or None)
+    store.set_llm_last_test(result)
+    return {"ok": result["ok"], "result": result}
+
+
+@app.post("/api/llm/models")
+def list_llm_models(body: LlmConfigIn | None = None):
+    """List the models exposed by the configured (or draft) server."""
+    draft = {k: v for k, v in (body.model_dump() if body else {}).items() if v is not None} if body else {}
+    if "api_key" not in draft and store.llm_config.get("api_key"):
+        draft["api_key"] = store.llm_config["api_key"]
+    return {"ok": True, "models": llm.list_models(draft or None)}
+
+
 # -- OKF (Frictionless Data) import/export ----------------------------------- #
 class OKFImportIn(BaseModel):
     content: dict[str, Any] | None = None
@@ -637,7 +688,8 @@ def _export_catalog_markdown(snap: dict) -> str:
 
 # -- guided exploration (5 local-LLM features) ------------------------------- #
 def _llm_model() -> str | None:
-    return store.snapshot()["settings"].get("llm_model")
+    # None → the client uses its configured default model.
+    return store.llm_config.get("model")
 
 
 class SuggestColumnIn(BaseModel):

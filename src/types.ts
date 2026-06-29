@@ -147,7 +147,28 @@ export interface CatalogState {
   model_notes: ModelNote[];
   runs: AgentRun[];
   audit: { version: number; ts: number; action: string; detail: string }[];
-  settings: { llm_model: string; theme: string };
+  settings: { theme: string; llm: LlmConfig };
+}
+
+export interface LlmConfig {
+  base_url: string;
+  model: string;
+  temperature: number;
+  max_tokens: number;
+  api_key_set?: boolean;
+  last_test?: LlmTest | null;
+}
+
+export interface LlmTest {
+  ok: boolean;
+  latency_ms: number;
+  message: string;
+  ts: number;
+}
+
+export interface LlmPreset {
+  name: string;
+  base_url: string;
 }
 
 export interface AgentMeta {
@@ -160,7 +181,13 @@ export interface AgentMeta {
 export interface Health {
   ok: boolean;
   version: number;
-  llm: { up: boolean; models: string[] };
+  llm: {
+    up: boolean;
+    models: string[];
+    config: LlmConfig;
+    presets: LlmPreset[];
+    last_test?: LlmTest | null;
+  };
   agents: AgentMeta[];
   pipeline: string[];
 }
