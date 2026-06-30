@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
-import { Workflow, Plus, StickyNote, Info, Trash2, Check, ArrowRight } from "lucide-react";
-import { useCatalog } from "../store";
+import { Workflow, Plus, StickyNote, Info, Trash2, Check, ArrowRight, X, KeyRound, Lock } from "lucide-react";
+import { useCatalog, useScopedDatasets } from "../store";
 import { api } from "../api";
-import { EmptyState, shortDs } from "../lib/ui";
+import { EmptyState, shortDs, semanticColor } from "../lib/ui";
 
 const EDGE_COLOR: Record<string, string> = {
   key: "#3b74f5", mapping: "#8b5cf6", manual: "#10b981",
@@ -12,9 +12,13 @@ export function Lineage() {
   const { state, mutate, toast } = useCatalog();
   const [note, setNote] = useState("");
   const [hover, setHover] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
 
-  const datasets = state?.datasets ?? [];
-  const edges = state?.lineage ?? [];
+  const datasets = useScopedDatasets();
+  const idSet = useMemo(() => new Set(datasets.map((d) => d.id)), [datasets]);
+  const edges = useMemo(
+    () => (state?.lineage ?? []).filter((e) => idSet.has(e.from) || idSet.has(e.to)),
+    [state?.lineage, idSet]);
   const layout = useMemo(() => buildLayout(datasets.map((d) => d.id), edges), [datasets, edges]);
 
   const addNote = async () => {
@@ -82,10 +86,13 @@ export function Lineage() {
               const isMap = nameOf(id).toUpperCase().startsWith("MAP_") || nameOf(id).toUpperCase().startsWith("DIM_");
               return (
                 <g key={id} transform={`translate(${n.x},${n.y})`} opacity={dim ? 0.3 : 1}
-                  onMouseEnter={() => setHover(id)} onMouseLeave={() => setHover(null)} style={{ cursor: "pointer" }}>
+                  onMouseEnter={() => setHover(id)} onMouseLeave={() => setHover(null)}
+                  onClick={() => setSelected(id)} style={{ cursor: "pointer" }}>
                   <rect width={n.w} height={n.h} rx={8}
-                    className={isMap ? "fill-violet-500/10 stroke-violet-500/40" : "fill-white stroke-slate-300 dark:fill-slate-800 dark:stroke-slate-600"}
-                    strokeWidth={1.5} />
+                    className={selected === id
+                      ? "fill-loom-500/15 stroke-loom-500"
+                      : isMap ? "fill-violet-500/10 stroke-violet-500/40" : "fill-white stroke-slate-300 dark:fill-slate-800 dark:stroke-slate-600"}
+                    strokeWidth={selected === id ? 2.5 : 1.5} />
                   <text x={10} y={20} className="fill-slate-700 text-[12px] font-semibold dark:fill-slate-100">{nameOf(id)}</text>
                   <text x={10} y={35} className="fill-slate-400 text-[9px]">{shortDs(id).split(".")[0]}</text>
                 </g>
@@ -97,6 +104,52 @@ export function Lineage() {
 
       {/* Right panel */}
       <div className="space-y-4">
+        {/* Deep-dive on the clicked node */}
+        {selected && (() => {
+          const d = datasets.find((x) => x.id === selected);
+          if (!d) return null;
+          const doc = state?.docs[d.id];
+          const ins = edges.filter((e) => e.to === d.id);
+          const outs = edges.filter((e) => e.from === d.id);
+          return (
+            <div className="card p-4 animate-fade-in">
+              <div className="flex items-center gap-2">
+                <Workflow size={15} className="text-loom-500" />
+                <span className="font-semibold">{d.name}</span>
+                {doc?.domain && <span className="chip bg-loom-500/10 text-loom-500">{doc.domain}</span>}
+                <button onClick={() => setSelected(null)} className="btn-ghost ml-auto !p-1"><X size={14} /></button>
+              </div>
+              <div className="mt-0.5 text-[11px] text-slate-400">{d.schema} · {d.columns.length} fields · ~{d.row_estimate.toLocaleString()} rows</div>
+              {doc?.definition && <p className="mt-1.5 text-xs text-slate-500">{doc.definition}</p>}
+              {doc?.synthesis && <p className="mt-1.5 rounded-lg bg-slate-100 p-2 text-[11px] text-slate-500 dark:bg-slate-800">{doc.synthesis}</p>}
+
+              <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+                <div>
+                  <div className="mb-1 font-semibold text-slate-400">Feeds from ({ins.length})</div>
+                  {ins.length ? ins.map((e, i) => <div key={i} className="truncate font-mono text-slate-500">← {nameOf(e.from)}</div>)
+                    : <div className="italic text-slate-400">—</div>}
+                </div>
+                <div>
+                  <div className="mb-1 font-semibold text-slate-400">Feeds into ({outs.length})</div>
+                  {outs.length ? outs.map((e, i) => <div key={i} className="truncate font-mono text-slate-500">→ {nameOf(e.to)}</div>)
+                    : <div className="italic text-slate-400">—</div>}
+                </div>
+              </div>
+
+              <div className="mt-2 max-h-40 overflow-auto rounded-lg border border-slate-100 dark:border-slate-800">
+                {d.columns.map((c) => (
+                  <div key={c.name} className="flex items-center gap-1.5 border-b border-slate-100 px-2 py-1 text-[11px] last:border-0 dark:border-slate-800/60">
+                    {c.profile.is_key_candidate && <KeyRound size={9} className="shrink-0 text-amber-500" />}
+                    <span className="truncate font-mono">{c.name}</span>
+                    {c.profile.sensitivity === "PII" && <Lock size={9} className="shrink-0 text-rose-400" />}
+                    <span className={`chip ml-auto shrink-0 ${semanticColor(c.profile.semantic_type)}`}>{c.profile.semantic_type}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+
         {/* Add edge form */}
         <AddEdgePanel datasets={datasets} />
 

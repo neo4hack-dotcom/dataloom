@@ -3,13 +3,14 @@ import type { ReactNode } from "react";
 import {
   LayoutDashboard, Database, Table2, GitCompare, Workflow, Bot, Tags,
   Search, Settings as SettingsIcon, Command, Moon, Sun, Sparkles, Cpu,
-  CircleDot, Link2, Compass, Library as LibraryIcon,
+  CircleDot, Link2, Compass, Library as LibraryIcon, ListChecks,
 } from "lucide-react";
 import { CatalogProvider, useCatalog } from "./store";
 import { CommandPalette } from "./components/CommandPalette";
 import { Toaster } from "./components/Toaster";
 import { Overview } from "./views/Overview";
 import { Connections } from "./views/Connections";
+import { Sources } from "./views/Sources";
 import { Catalog } from "./views/Catalog";
 import { Explorer } from "./views/Explorer";
 import { Library } from "./views/Library";
@@ -21,13 +22,14 @@ import { SearchView } from "./views/SearchView";
 import { SettingsView } from "./views/SettingsView";
 
 export type Tab =
-  | "overview" | "library" | "connections" | "catalog" | "explorer" | "relationships"
+  | "overview" | "library" | "connections" | "sources" | "catalog" | "explorer" | "relationships"
   | "lineage" | "agents" | "glossary" | "search" | "settings";
 
 const TABS: { id: Tab; label: string; icon: typeof Database; group?: string }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "library", label: "Library", icon: LibraryIcon },
   { id: "connections", label: "Connections", icon: Database, group: "Build" },
+  { id: "sources", label: "Sources & scope", icon: ListChecks },
   { id: "catalog", label: "Catalog", icon: Table2 },
   { id: "explorer", label: "Explorer", icon: Compass },
   { id: "relationships", label: "Relationships", icon: GitCompare },
@@ -42,7 +44,7 @@ function Shell() {
   const [tab, setTab] = useState<Tab>("overview");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [dark, setDark] = useState(true);
-  const { state, health, loading, activeRun } = useCatalog();
+  const { state, health, loading, activeRun, activeConn, setActiveConn } = useCatalog();
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -146,6 +148,21 @@ function Shell() {
           <h1 className="text-base font-semibold">
             {TABS.find((t) => t.id === tab)?.label}
           </h1>
+
+          {/* global source scope — filters every view */}
+          {(state?.connections.length ?? 0) > 0 && (
+            <label className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white/60 px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900/60">
+              <Database size={13} className="text-loom-500" />
+              <select value={activeConn} onChange={(e) => setActiveConn(e.target.value)}
+                className="bg-transparent text-xs font-medium outline-none dark:text-slate-200">
+                <option value="all">All sources</option>
+                {state!.connections.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </label>
+          )}
+
           <div className="ml-auto flex items-center gap-3 text-xs text-slate-400">
             <span className="flex items-center gap-1">
               <CircleDot size={13} className="text-emerald-500" /> v{state?.version ?? "—"}
@@ -166,6 +183,7 @@ function Shell() {
               {tab === "overview" && <Overview goto={setTab} />}
               {tab === "library" && <Library goto={setTab} />}
               {tab === "connections" && <Connections goto={setTab} />}
+              {tab === "sources" && <Sources goto={setTab} />}
               {tab === "catalog" && <Catalog />}
               {tab === "explorer" && <Explorer />}
               {tab === "relationships" && <Relationships />}

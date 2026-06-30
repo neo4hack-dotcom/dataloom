@@ -16,6 +16,9 @@ interface Ctx {
   mutate: <T>(fn: (version: number) => Promise<T>) => Promise<T | undefined>;
   activeRun: AgentRun | null;
   setActiveRun: (r: AgentRun | null) => void;
+  /** global source scope: "all" or a connection id — filters every view */
+  activeConn: string;
+  setActiveConn: (id: string) => void;
 }
 
 const CatalogContext = createContext<Ctx | null>(null);
@@ -26,13 +29,27 @@ export function useCatalog(): Ctx {
   return c;
 }
 
+/** Datasets filtered by the active source scope ("all" → everything). */
+export function useScopedDatasets() {
+  const { state, activeConn } = useCatalog();
+  const all = state?.datasets ?? [];
+  return activeConn === "all" ? all : all.filter((d) => d.connection_id === activeConn);
+}
+
 export function CatalogProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<CatalogState | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [loading, setLoading] = useState(true);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
+  const [activeConn, setActiveConnState] = useState<string>(
+    () => localStorage.getItem("dl.activeConn") || "all");
   const toastId = useRef(0);
+
+  const setActiveConn = useCallback((id: string) => {
+    setActiveConnState(id);
+    localStorage.setItem("dl.activeConn", id);
+  }, []);
 
   const toast = useCallback((kind: Toast["kind"], text: string) => {
     const id = ++toastId.current;
@@ -92,7 +109,7 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
   }, [activeRun, refresh, toast]);
 
   return (
-    <CatalogContext.Provider value={{ state, health, loading, toasts, refresh, toast, mutate, activeRun, setActiveRun }}>
+    <CatalogContext.Provider value={{ state, health, loading, toasts, refresh, toast, mutate, activeRun, setActiveRun, activeConn, setActiveConn }}>
       {children}
     </CatalogContext.Provider>
   );

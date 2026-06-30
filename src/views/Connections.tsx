@@ -109,6 +109,7 @@ export function Connections({ goto }: { goto: (t: Tab) => void }) {
                   <option value="oracle">Oracle (retail star-schema)</option>
                   <option value="clickhouse">ClickHouse (clickstream)</option>
                   <option value="mixed">Mixed (both)</option>
+                  <option value="large">Large warehouse (420+ tables — test scoping)</option>
                 </select>
               </label>
             )}

@@ -137,6 +137,49 @@ class Store:
             self._db["runs"] = []
             self._bump("catalog.reset", "")
 
+    # -- backup / restore ---------------------------------------------------- #
+    def restore_backup(self, backup: dict[str, Any], mode: str = "replace") -> dict[str, Any]:
+        """
+        Restore a previously exported full snapshot.
+          mode='replace' → wipe and load the backup exactly.
+          mode='merge'   → append datasets/connections/etc. that aren't already present
+                           (by id / key), keeping current items.
+        Returns a small summary.
+        """
+        with self._lock:
+            data = backup.get("data", backup) if isinstance(backup, dict) else {}
+            if not isinstance(data, dict):
+                raise ValueError("invalid backup")
+            if mode == "replace":
+                merged = copy.deepcopy(_DEFAULT)
+                for k in _DEFAULT:
+                    if k in data and k != "version":
+                        merged[k] = data[k]
+                merged["version"] = self._db["version"] + 1
+                self._db = merged
+                self._migrate_settings(self._db)
+                summary = {k: (len(data[k]) if isinstance(data.get(k), list) else 1)
+                           for k in ("connections", "datasets", "relationships", "glossary") if k in data}
+            else:  # merge
+                def by_id(lst, key="id"):
+                    return {x.get(key): x for x in lst if isinstance(x, dict)}
+                # connections + datasets by id; docs/settings by key
+                cur_conn = by_id(self._db["connections"])
+                for c in data.get("connections", []):
+                    cur_conn.setdefault(c.get("id"), c)
+                self._db["connections"] = list(cur_conn.values())
+                cur_ds = by_id(self._db["datasets"])
+                for d in data.get("datasets", []):
+                    cur_ds.setdefault(d.get("id"), d)
+                self._db["datasets"] = list(cur_ds.values())
+                self._db["docs"] = {**data.get("docs", {}), **self._db["docs"]}
+                for key in ("relationships", "matches", "lineage", "glossary", "model_notes"):
+                    self._db[key] = self._db.get(key, []) + data.get(key, [])
+                summary = {"merged_datasets": len(data.get("datasets", [])),
+                           "merged_connections": len(data.get("connections", []))}
+            self._bump("backup.restore", mode)
+            return summary
+
     # -- connections --------------------------------------------------------- #
     def add_connection(self, conn: dict[str, Any]):
         with self._lock:
@@ -154,6 +197,32 @@ class Store:
             self._db["connections"] = [c for c in self._db["connections"] if c["id"] != cid]
             self._db["datasets"] = [d for d in self._db["datasets"] if d["connection_id"] != cid]
             self._bump("connection.delete", cid)
+
+    # -- discovery & scope (big-volume sources) ------------------------------ #
+    def set_discovered_tables(self, cid: str, tables: list[dict[str, Any]]):
+        """Store the lightweight table inventory (no profiling) for a connection."""
+        with self._lock:
+            conn = self.get_connection(cid)
+            if not conn:
+                raise ValueError("connection not found")
+            conn["discovered_tables"] = tables
+            conn["discovered_at"] = time.time()
+            self._bump("connection.discover", f"{cid}: {len(tables)} tables")
+            return tables
+
+    def set_scope(self, cid: str, keys: list[str]):
+        """Persist the user-selected scope (list of 'schema.name') for a connection."""
+        with self._lock:
+            conn = self.get_connection(cid)
+            if not conn:
+                raise ValueError("connection not found")
+            conn["scope"] = keys
+            self._bump("connection.scope", f"{cid}: {len(keys)} tables")
+            return keys
+
+    def get_scope(self, cid: str) -> list[str]:
+        conn = self.get_connection(cid)
+        return (conn or {}).get("scope", [])
 
     # -- datasets / docs ----------------------------------------------------- #
     def upsert_datasets(self, datasets: list[dict[str, Any]]):
