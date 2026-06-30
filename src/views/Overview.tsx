@@ -57,7 +57,7 @@ export function Overview({ goto }: { goto: (t: Tab) => void }) {
             <h2 className="mt-1 text-2xl font-bold">Weave your data dictionary</h2>
             <p className="mt-1 max-w-xl text-sm text-slate-500">
               Value-fingerprinting, key detection via real overlap tests, and enrichment
-              by local LLM agents. One click and DataLoom rebuilds your data chains.
+              by local LLM agents. One click and DOINg.Catalogue rebuilds your data chains.
             </p>
           </div>
           <button onClick={launchMagic} className="btn-primary !px-5 !py-2.5 text-base shadow-lg">

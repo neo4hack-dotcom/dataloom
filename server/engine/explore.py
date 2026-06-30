@@ -187,16 +187,28 @@ def document_table(snap: dict, ds_id: str, model: str | None = None) -> dict[str
 #  Feature 3 — Catalog Copilot (conversational RAG)                           #
 # --------------------------------------------------------------------------- #
 _COPILOT_SYSTEM = (
-    "You are DataLoom Copilot, an assistant embedded in a data catalog. Answer the "
+    "You are DOINg.Catalogue Copilot, an assistant embedded in a data catalog. Answer the "
     "user's question about their data warehouse using ONLY the catalog context "
     "provided (tables, columns, semantic types, definitions, relationships). If the "
     "answer is not in the context, say so plainly. Be concise, factual and helpful. "
     "When you reference a column, use the form TABLE.column. Plain text, no markdown headers."
 )
 
+# Friendly variant for the non-technical Library experience.
+_LIBRARIAN_SYSTEM = (
+    "You are the DOINg.Catalogue Librarian, a warm and patient guide who helps "
+    "NON-TECHNICAL business users find and understand information in their company's "
+    "data. Answer ONLY from the catalog context provided. Use plain, everyday language "
+    "— avoid jargon like 'foreign key', 'cardinality' or 'schema'; instead say things "
+    "like 'this links to', 'each customer can have several orders', or 'the table that "
+    "stores'. Point people to the right table and field in the form TABLE.field so they "
+    "can click through. If the catalog doesn't cover the question, say so kindly and "
+    "suggest what to look at. Keep it short and friendly. Plain text, no markdown headers."
+)
+
 
 def copilot(snap: dict, question: str, history: list[dict] | None = None,
-            model: str | None = None) -> dict[str, Any]:
+            model: str | None = None, librarian: bool = False) -> dict[str, Any]:
     if not llm.is_up():
         raise LLMUnavailable()
     context = _catalog_context(snap, question)
@@ -206,7 +218,8 @@ def copilot(snap: dict, question: str, history: list[dict] | None = None,
         convo += f"{role}: {h.get('content','')}\n"
     prompt = (f"Catalog context:\n{context}\n\n"
               f"{convo}User: {question}\nAssistant:")
-    answer = llm.complete_text(system=_COPILOT_SYSTEM, prompt=prompt, model=model)
+    system = _LIBRARIAN_SYSTEM if librarian else _COPILOT_SYSTEM
+    answer = llm.complete_text(system=system, prompt=prompt, model=model)
     cited = _cited_columns(snap, answer)
     return {"answer": answer, "cited": cited}
 

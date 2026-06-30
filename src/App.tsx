@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import {
   LayoutDashboard, Database, Table2, GitCompare, Workflow, Bot, Tags,
   Search, Settings as SettingsIcon, Command, Moon, Sun, Sparkles, Cpu,
-  CircleDot, Link2, Compass,
+  CircleDot, Link2, Compass, Library as LibraryIcon,
 } from "lucide-react";
 import { CatalogProvider, useCatalog } from "./store";
 import { CommandPalette } from "./components/CommandPalette";
@@ -12,6 +12,7 @@ import { Overview } from "./views/Overview";
 import { Connections } from "./views/Connections";
 import { Catalog } from "./views/Catalog";
 import { Explorer } from "./views/Explorer";
+import { Library } from "./views/Library";
 import { Relationships } from "./views/Relationships";
 import { Lineage } from "./views/Lineage";
 import { Agents } from "./views/Agents";
@@ -20,12 +21,13 @@ import { SearchView } from "./views/SearchView";
 import { SettingsView } from "./views/SettingsView";
 
 export type Tab =
-  | "overview" | "connections" | "catalog" | "explorer" | "relationships"
+  | "overview" | "library" | "connections" | "catalog" | "explorer" | "relationships"
   | "lineage" | "agents" | "glossary" | "search" | "settings";
 
-const TABS: { id: Tab; label: string; icon: typeof Database }[] = [
+const TABS: { id: Tab; label: string; icon: typeof Database; group?: string }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
-  { id: "connections", label: "Connections", icon: Database },
+  { id: "library", label: "Library", icon: LibraryIcon },
+  { id: "connections", label: "Connections", icon: Database, group: "Build" },
   { id: "catalog", label: "Catalog", icon: Table2 },
   { id: "explorer", label: "Explorer", icon: Compass },
   { id: "relationships", label: "Relationships", icon: GitCompare },
@@ -74,12 +76,12 @@ function Shell() {
             <Workflow size={20} />
           </div>
           <div>
-            <div className="text-sm font-bold leading-tight">DataLoom</div>
-            <div className="text-[10px] uppercase tracking-wider text-slate-400">Data Catalog</div>
+            <div className="text-sm font-bold leading-tight">DOINg.Catalogue</div>
+            <div className="text-[10px] uppercase tracking-wider text-slate-400">Data Catalogue</div>
           </div>
         </div>
 
-        <nav className="flex-1 space-y-0.5 px-2 py-2">
+        <nav className="flex-1 space-y-0.5 overflow-y-auto px-2 py-2">
           {TABS.map((t) => {
             const Icon = t.icon;
             const active = tab === t.id;
@@ -87,7 +89,13 @@ function Shell() {
               t.id === "catalog" ? counts.datasets :
               t.id === "relationships" ? counts.relationships : 0;
             return (
-              <button key={t.id} onClick={() => setTab(t.id)}
+              <div key={t.id}>
+                {t.group && (
+                  <div className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                    {t.group}
+                  </div>
+                )}
+              <button onClick={() => setTab(t.id)}
                 className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
                   active
                     ? "bg-loom-500/10 text-loom-600 dark:text-loom-300"
@@ -107,6 +115,7 @@ function Shell() {
                   </span>
                 )}
               </button>
+              </div>
             );
           })}
         </nav>
@@ -155,6 +164,7 @@ function Shell() {
           ) : (
             <div className="mx-auto max-w-7xl animate-fade-in">
               {tab === "overview" && <Overview goto={setTab} />}
+              {tab === "library" && <Library goto={setTab} />}
               {tab === "connections" && <Connections goto={setTab} />}
               {tab === "catalog" && <Catalog />}
               {tab === "explorer" && <Explorer />}
