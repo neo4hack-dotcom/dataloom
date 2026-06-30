@@ -1,12 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Cpu, Download, FileJson, FileText, History, Check, Server,
   Table2, AppWindow, Package, RotateCcw, AlertTriangle, Upload, Link2,
-  RefreshCw, Zap, Loader2, Gauge,
+  RefreshCw, Zap, Loader2, Gauge, Save, DatabaseBackup, FileUp,
 } from "lucide-react";
 import { useCatalog } from "../store";
 import { api } from "../api";
 import { timeAgo } from "../lib/ui";
+
+type ExportTargetT = "catalog" | "app" | "full";
 
 type ExportTarget = "catalog" | "app" | "full";
 
@@ -299,6 +301,9 @@ export function SettingsView() {
         </div>
       </div>
 
+      {/* Backup & restore */}
+      <BackupRestore doExport={doExport} />
+
       {/* Reset */}
       <div className="card border-rose-500/20 p-5">
         <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-rose-500">
@@ -341,6 +346,76 @@ export function SettingsView() {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---- Backup & restore (full app snapshot) --------------------------------- //
+function BackupRestore({ doExport }: { doExport: (t: ExportTargetT, fmt: "markdown" | "json" | "okf") => void }) {
+  const { mutate, refresh, toast } = useCatalog();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [pending, setPending] = useState<{ name: string; backup: any; summary: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const pick = (file: File) => {
+    file.text().then((text) => {
+      try {
+        const parsed = JSON.parse(text);
+        const data = parsed.data ?? parsed;
+        const n = (k: string) => (Array.isArray(data[k]) ? data[k].length : 0);
+        const summary = `${n("datasets")} tables · ${n("connections")} connections · ${n("relationships")} relationships · ${n("lineage")} lineage edges`;
+        setPending({ name: file.name, backup: parsed, summary });
+      } catch {
+        toast("err", "Not a valid backup file (JSON expected).");
+      }
+    });
+  };
+
+  const restore = async (mode: "replace" | "merge") => {
+    if (!pending) return;
+    setBusy(true);
+    try {
+      const r = await mutate((v) => api.importBackup(pending.backup, mode, v));
+      if (r) { await refresh(); toast("ok", `Backup ${mode === "replace" ? "restored" : "merged"} ✓`); }
+      setPending(null);
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="card p-5">
+      <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
+        <DatabaseBackup size={16} className="text-loom-500" /> Backup &amp; restore
+      </div>
+      <p className="mb-3 text-xs text-slate-400">
+        Save everything (catalogue + connections + settings + LLM config) to one file, and reload it any time —
+        e.g. to migrate to another machine or roll back.
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <button onClick={() => doExport("full", "json")} className="btn-primary">
+          <Save size={15} /> Download full backup
+        </button>
+        <button onClick={() => fileRef.current?.click()} className="btn-outline">
+          <FileUp size={15} /> Restore from file…
+        </button>
+        <input ref={fileRef} type="file" accept="application/json,.json" className="hidden"
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) pick(f); e.target.value = ""; }} />
+      </div>
+
+      {pending && (
+        <div className="mt-3 rounded-lg border border-loom-500/30 bg-loom-500/5 p-3">
+          <div className="text-sm font-medium">{pending.name}</div>
+          <div className="text-xs text-slate-400">{pending.summary}</div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button onClick={() => restore("replace")} disabled={busy} className="btn-primary text-xs">
+              {busy ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />} Replace everything
+            </button>
+            <button onClick={() => restore("merge")} disabled={busy} className="btn-outline text-xs">
+              Merge into current
+            </button>
+            <button onClick={() => setPending(null)} className="btn-ghost text-xs">Cancel</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

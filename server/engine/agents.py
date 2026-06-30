@@ -39,9 +39,15 @@ class ProfilerAgent:
 
     def run(self, store, conn: dict[str, Any], log: LogFn) -> dict[str, Any]:
         c = build_connector(conn)
-        log("info", f"Connexion « {conn['name']} » ({conn['type']}) établie.")
+        log("info", f"Connection '{conn['name']}' ({conn['type']}) established.")
         tables = c.list_tables()
-        log("info", f"{len(tables)} tables détectées. Profilage en cours…")
+        scope = conn.get("_scope")  # list of "schema.name" — the user-selected scope
+        if scope:
+            scope_set = set(scope)
+            tables = [t for t in tables if f"{t['schema']}.{t['name']}" in scope_set]
+            log("info", f"Scope: {len(tables)} selected table(s) (of the source's inventory). Profiling…")
+        else:
+            log("info", f"{len(tables)} tables detected. Profiling…")
         datasets = []
         for t in tables:
             cols = c.get_columns(t["schema"], t["name"])

@@ -4,7 +4,7 @@ import {
   Loader2, MessageSquareText, ListTodo, Zap, Send, BookOpen, Star, ArrowRight,
   Wand2, ShieldCheck,
 } from "lucide-react";
-import { useCatalog } from "../store";
+import { useCatalog, useScopedDatasets } from "../store";
 import { api, type ColumnSuggestion, type CompletionItem, type TableSuggestion } from "../api";
 import {
   EmptyState, semanticColor, confidenceColor, QualityBar, shortDs,
@@ -21,7 +21,7 @@ export function Explorer() {
   const [panel, setPanel] = useState<Panel>("evidence");
   const [pins, setPins] = useState<Set<string>>(new Set());
 
-  const datasets = state?.datasets ?? [];
+  const datasets = useScopedDatasets();
   const llmUp = health?.llm.up ?? false;
 
   const filtered = useMemo(() => {

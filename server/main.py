@@ -17,6 +17,7 @@ from typing import Any
 
 from store import Store
 from engine import llm, agents, explore
+from engine.connectors import build_connector
 
 app = FastAPI(title="DOINg.Catalogue API", version="1.0")
 app.add_middleware(
@@ -82,10 +83,45 @@ def del_connection(cid: str, x_base_version: int | None = Header(default=None)):
     return {"ok": True, "version": store.version}
 
 
+# -- discovery & scope (big-volume sources) ---------------------------------- #
+@app.post("/api/connections/{cid}/discover")
+def discover_tables(cid: str, x_base_version: int | None = Header(default=None)):
+    """List all tables of a source WITHOUT profiling (cheap inventory for 100s of tables)."""
+    guard(x_base_version)
+    conn = store.get_connection(cid)
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    try:
+        connector = build_connector(conn)
+        tables = connector.list_tables()
+    except Exception as e:
+        raise HTTPException(422, f"Discovery failed: {e}")
+    # keep it lightweight: schema, name, row_estimate, comment
+    inv = [{"schema": t["schema"], "name": t["name"],
+            "row_estimate": t.get("row_estimate", 0), "comment": t.get("comment")}
+           for t in tables]
+    store.set_discovered_tables(cid, inv)
+    return {"ok": True, "count": len(inv), "tables": inv, "version": store.version}
+
+
+class ScopeIn(BaseModel):
+    tables: list[str]  # ["schema.name", ...]
+
+
+@app.post("/api/connections/{cid}/scope")
+def set_scope(cid: str, body: ScopeIn, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    if not store.get_connection(cid):
+        raise HTTPException(404, "connection not found")
+    store.set_scope(cid, body.tables)
+    return {"ok": True, "count": len(body.tables), "version": store.version}
+
+
 # -- runs / pipeline --------------------------------------------------------- #
 class RunIn(BaseModel):
     connection_id: str
     agents: list[str] | None = None
+    tables: list[str] | None = None  # scope override; falls back to the saved scope
 
 
 @app.post("/api/runs")
@@ -95,9 +131,15 @@ def launch_run(body: RunIn, x_base_version: int | None = Header(default=None)):
     if not conn:
         raise HTTPException(404, "connection not found")
     agent_ids = body.agents or agents.PIPELINE
+    # Scope: explicit request → saved scope → none (whole source).
+    scope = body.tables if body.tables is not None else conn.get("scope")
+    run_conn = {**conn, "_scope": scope}
     run = store.create_run(conn["id"], agent_ids)
+    if scope:
+        store.append_run_log(run["id"], {"ts": __import__("time").time(), "level": "info",
+                                         "message": f"Scope: {len(scope)} table(s) selected."})
     t = threading.Thread(target=agents.run_pipeline,
-                         args=(store, conn, agent_ids, run["id"]), daemon=True)
+                         args=(store, run_conn, agent_ids, run["id"]), daemon=True)
     t.start()
     return {"run": run, "version": store.version}
 
@@ -136,13 +178,19 @@ class DatasetMetaIn(BaseModel):
     definition: str | None = None
     domain: str | None = None
     comment: str | None = None
+    # identity card + reusable content synthesis (manually entered or LLM, all persisted)
+    identity: dict[str, Any] | None = None       # {content, data_kind, products, owner, refresh, grain…}
+    synthesis: str | None = None                 # reusable LLM/human content summary
+    partitioning: dict[str, Any] | None = None   # {column, explanation, partitions:[{value,note}]}
 
 
 @app.patch("/api/datasets/{ds_id:path}/meta")
 def update_dataset_meta(ds_id: str, body: DatasetMetaIn,
                         x_base_version: int | None = Header(default=None)):
     guard(x_base_version)
-    store.update_dataset_meta(ds_id, body.model_dump())
+    patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    patch["meta_source"] = "human"
+    store.update_dataset_meta(ds_id, patch)
     return {"ok": True, "version": store.version}
 
 
@@ -174,6 +222,8 @@ class ColDocIn(BaseModel):
     calculation: str | None = None
     status: str | None = None
     sensitivity: str | None = None
+    source_file: str | None = None   # optional origin file (csv/txt/bulk/API/kafka topic…)
+    source_field: str | None = None  # optional origin field name in that source
 
 
 @app.post("/api/columns/{ds_id:path}/{col}/doc")
@@ -827,6 +877,164 @@ def llm_explain_relationship(body: ExplainRelIn):
         raise HTTPException(503, "Local LLM unavailable")
     except ValueError as e:
         raise HTTPException(404, str(e))
+
+
+# -- table identity card + content synthesis (cached) ------------------------ #
+class SynthIn(BaseModel):
+    dataset_id: str
+
+
+@app.post("/api/llm/synthesize-table")
+def llm_synthesize_table(body: SynthIn, x_base_version: int | None = Header(default=None)):
+    """Generate a reusable identity card + content synthesis, then STORE it (cached)."""
+    guard(x_base_version)
+    snap = store.snapshot(trim=False)
+    try:
+        out = explore.synthesize_table(snap, body.dataset_id, model=_llm_model())
+    except explore.LLMUnavailable:
+        raise HTTPException(503, "Local LLM unavailable")
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    identity = {
+        "content": out.get("content", ""),
+        "data_kind": out.get("data_kind", ""),
+        "products": out.get("products", []),
+        "key_fields": out.get("key_fields", []),
+    }
+    store.update_dataset_meta(body.dataset_id, {
+        "synthesis": out.get("synthesis", ""),
+        "identity": identity,
+        "synthesis_source": "llm",
+        "synthesis_at": __import__("time").time(),
+        "suggested_partition": out.get("suggested_partition"),
+    })
+    return {"ok": True, "result": out, "version": store.version}
+
+
+# -- ETL mapping-table import (mass lineage + pre-documentation) -------------- #
+class MappingDetectIn(BaseModel):
+    dataset_id: str
+
+
+@app.post("/api/mapping/detect")
+def mapping_detect(body: MappingDetectIn):
+    """LLM detects which columns of a config/mapping table hold each ETL role."""
+    snap = store.snapshot(trim=False)
+    ds = next((d for d in snap["datasets"] if d["id"] == body.dataset_id), None)
+    if not ds:
+        raise HTTPException(404, "dataset not found")
+    conn = store.get_connection(ds["connection_id"])
+    rows: list[dict] = []
+    if conn:
+        try:
+            rows = build_connector(conn).sample_rows(ds["schema"], ds["name"], limit=50)
+        except Exception:
+            rows = []
+    try:
+        out = explore.detect_mapping_roles(snap, body.dataset_id, rows, model=_llm_model())
+    except explore.LLMUnavailable:
+        raise HTTPException(503, "Local LLM unavailable")
+    return {"ok": True, **out, "columns": [c["name"] for c in ds["columns"]], "sample": rows[:8]}
+
+
+class MappingApplyIn(BaseModel):
+    dataset_id: str
+    roles: dict[str, str | None]          # role -> column name (or null)
+    create_lineage: bool = True
+    create_docs: bool = True
+    limit: int = 1000
+
+
+@app.post("/api/mapping/apply")
+def mapping_apply(body: MappingApplyIn, x_base_version: int | None = Header(default=None)):
+    """
+    Deterministically build lineage edges + pre-documentation from a mapping table's
+    rows, MERGING into the catalog (never erasing existing docs/edges).
+    """
+    guard(x_base_version)
+    snap = store.snapshot(trim=False)
+    ds = next((d for d in snap["datasets"] if d["id"] == body.dataset_id), None)
+    if not ds:
+        raise HTTPException(404, "dataset not found")
+    conn = store.get_connection(ds["connection_id"])
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    try:
+        rows = build_connector(conn).sample_rows(ds["schema"], ds["name"], limit=body.limit)
+    except Exception as e:
+        raise HTTPException(422, f"Could not read mapping rows: {e}")
+
+    roles = body.roles
+    col_tt, col_tc = roles.get("target_table"), roles.get("target_column")
+    col_td = roles.get("target_definition")
+    col_st, col_sc = roles.get("source_table"), roles.get("source_column")
+    cid = conn["id"]
+
+    # index existing datasets by (UPPER name) to resolve target/source table names → ds_id
+    by_name: dict[str, str] = {}
+    for d in snap["datasets"]:
+        by_name[d["name"].upper()] = d["id"]
+        by_name[f"{d['schema']}.{d['name']}".upper()] = d["id"]
+
+    def resolve(name: str | None) -> str | None:
+        if not name:
+            return None
+        return by_name.get(str(name).strip().upper()) or by_name.get(str(name).split(".")[-1].strip().upper())
+
+    edges_added = docs_added = 0
+    seen_edges = {(e["from"], e["to"], e.get("via")) for e in snap["lineage"]}
+    existing_docs = snap.get("docs", {})
+
+    for r in rows:
+        tt = r.get(col_tt) if col_tt else None
+        tc = r.get(col_tc) if col_tc else None
+        td = r.get(col_td) if col_td else None
+        st = r.get(col_st) if col_st else None
+        sc = r.get(col_sc) if col_sc else None
+
+        target_ds = resolve(tt)
+        source_ds = resolve(st)
+
+        # 1) pre-documentation: target column definition (merge — don't overwrite existing)
+        if body.create_docs and target_ds and tc and td:
+            cur = (existing_docs.get(target_ds, {}).get("columns", {}) or {}).get(str(tc), {})
+            if not cur.get("definition"):
+                store.update_column_doc(target_ds, str(tc), {
+                    "definition": str(td), "source": "mapping-table",
+                    "status": "suggested", "confidence": 70,
+                    "source_field": f"{st}.{sc}" if st and sc else (str(sc) if sc else None),
+                })
+                docs_added += 1
+
+        # 2) lineage edge: source table → target table
+        if body.create_lineage and source_ds and target_ds and source_ds != target_ds:
+            via = f"{sc} → {tc}" if sc and tc else "ETL mapping"
+            key = (source_ds, target_ds, via)
+            if key not in seen_edges:
+                seen_edges.add(key)
+                store.add_lineage_edge({"from": source_ds, "to": target_ds,
+                                        "via": via, "kind": "mapping", "confidence": 90})
+                edges_added += 1
+
+    return {"ok": True, "edges_added": edges_added, "docs_added": docs_added,
+            "rows_scanned": len(rows), "version": store.version}
+
+
+# -- full backup restore ----------------------------------------------------- #
+class BackupIn(BaseModel):
+    backup: dict[str, Any]
+    mode: str = "replace"  # replace | merge
+
+
+@app.post("/api/import/backup")
+def import_backup(body: BackupIn, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    try:
+        summary = store.restore_backup(body.backup, body.mode)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    llm.configure(store.llm_config)
+    return {"ok": True, "mode": body.mode, "summary": summary, "version": store.version}
 
 
 # -- static file serving (production build) ---------------------------------- #

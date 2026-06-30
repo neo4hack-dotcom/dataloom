@@ -37,6 +37,18 @@ class Connector(ABC):
     def sample_values(self, schema: str, table: str, column: str, limit: int = 2000) -> list[Any]:
         """Return up to `limit` raw values for the column (NULLs filtered)."""
 
+    def sample_rows(self, schema: str, table: str, limit: int = 500) -> list[dict[str, Any]]:
+        """Return up to `limit` whole rows as dicts. Default: zip per-column samples.
+
+        Subclasses with a native full-row read (Oracle/ClickHouse/Demo) override this
+        so columns stay aligned even when some contain NULLs.
+        """
+        cols = [c["name"] for c in self.get_columns(schema, table)]
+        per_col = {c: self.sample_values(schema, table, c, limit) for c in cols}
+        n = max((len(v) for v in per_col.values()), default=0)
+        return [{c: (per_col[c][i] if i < len(per_col[c]) else None) for c in cols}
+                for i in range(min(n, limit))]
+
     def ping(self) -> bool:
         try:
             self.list_tables()
@@ -169,6 +181,25 @@ class DemoConnector(Connector):
             {"src_code": "LU", "label_fr": "Luxembourg", "region": "EUROPE"},
         ]
 
+        # ETL configuration/mapping table — drives lineage + pre-documentation
+        etl_mapping = [
+            {"src_table": "CUSTOMERS", "src_field": "customer_id", "tgt_table": "DIM_CLIENT",
+             "tgt_field": "id_client", "tgt_definition": "Unique client identifier (source key)",
+             "transform": "DIRECT"},
+            {"src_table": "CUSTOMERS", "src_field": "full_name", "tgt_table": "DIM_CLIENT",
+             "tgt_field": "libelle_client", "tgt_definition": "Client display label (upper-cased name)",
+             "transform": "UPPER(full_name)"},
+            {"src_table": "CUSTOMERS", "src_field": "country_code", "tgt_table": "DIM_CLIENT",
+             "tgt_field": "code_pays", "tgt_definition": "ISO country code of the client",
+             "transform": "DIRECT"},
+            {"src_table": "MAP_COUNTRY", "src_field": "region", "tgt_table": "DIM_CLIENT",
+             "tgt_field": "segment_client", "tgt_definition": "Client commercial segment",
+             "transform": "LOOKUP"},
+            {"src_table": "ORDERS", "src_field": "total_amount", "tgt_table": "PAYMENTS",
+             "tgt_field": "paid_amount", "tgt_definition": "Amount actually settled for the order",
+             "transform": "SUM"},
+        ]
+
         # ClickHouse-style clickstream events sharing user_id with customers
         events = []
         for i in range(4000):
@@ -190,6 +221,7 @@ class DemoConnector(Connector):
             ("FINANCE", "PAYMENTS"): ("table", payments, "Encaissements"),
             ("DWH", "DIM_CLIENT"): ("table", dim_client, "Dimension client (étoile)"),
             ("DWH", "MAP_COUNTRY"): ("table", map_country, "Table de mapping pays"),
+            ("DWH", "ETL_MAPPING"): ("table", etl_mapping, "Table de configuration ETL (source→cible)"),
         }
         clickhouse_tables = {
             ("analytics", "events"): ("table", events, "Flux d'évènements web (clickstream)"),
@@ -201,8 +233,49 @@ class DemoConnector(Connector):
             pass
         elif self.flavor == "clickhouse":
             self._tables = clickhouse_tables
+        elif self.flavor == "large":
+            # 7 real coherent tables + a few hundred synthetic ones (lazy).
+            self._tables = {**oracle_tables, **clickhouse_tables}
+            self._build_large_inventory()
         else:  # 'mixed' demo
             self._tables = {**oracle_tables, **clickhouse_tables}
+
+    # -- large-volume inventory (lazy) --------------------------------------- #
+    def _build_large_inventory(self, n: int = 420) -> None:
+        """
+        Register ~n synthetic table *descriptors* only — columns and rows are
+        generated on demand (get_columns / sample_values), so listing 400+ tables
+        is instant and only the scoped tables ever incur generation cost.
+        """
+        rng = random.Random(7)
+        schemas = ["SALES", "FINANCE", "HR", "MARKETING", "LOGISTICS", "SUPPLY",
+                   "WEB", "STAGING", "DWH", "RISK", "PRODUCT", "SUPPORT"]
+        prefixes = ["STG", "DIM", "FCT", "AGG", "REF", "MAP", "HIST", "TMP", "V", "RAW"]
+        entities = ["CUSTOMER", "ORDER", "PRODUCT", "INVOICE", "PAYMENT", "SHIPMENT",
+                    "EMPLOYEE", "CONTRACT", "CAMPAIGN", "LEAD", "TICKET", "ACCOUNT",
+                    "LEDGER", "ASSET", "VENDOR", "WAREHOUSE", "SKU", "PRICE", "TAX",
+                    "REGION", "CHANNEL", "SEGMENT", "RETURN", "REFUND", "DISCOUNT",
+                    "SUBSCRIPTION", "SESSION", "CLICK", "IMPRESSION", "INVENTORY",
+                    "FORECAST", "BUDGET", "QUOTA", "COMMISSION", "PAYROLL", "EXPENSE"]
+        self._synth: dict[tuple[str, str], dict[str, Any]] = {}
+        seen = set()
+        attempts = 0
+        while len(self._synth) < n and attempts < n * 20:
+            attempts += 1
+            schema = rng.choice(schemas)
+            name = f"{rng.choice(prefixes)}_{rng.choice(entities)}"
+            if rng.random() < 0.4:
+                name += f"_{rng.choice(['DAILY','MONTHLY','EU','NA','V2','SNAPSHOT','RAW','CDC'])}"
+            key = (schema, name)
+            if key in seen or key in self._tables:
+                continue
+            seen.add(key)
+            self._synth[key] = {
+                "row_estimate": rng.choice([0, 120, 5_000, 48_000, 250_000, 1_200_000]),
+                "n_cols": rng.randint(5, 18),
+                "seed": rng.randint(1, 10**9),
+                "comment": None,
+            }
 
     # -- helpers ------------------------------------------------------------- #
     def _rand_date(self, y0: int, y1: int) -> str:
@@ -236,27 +309,107 @@ class DemoConnector(Connector):
                 "schema": schema, "name": name, "kind": kind,
                 "row_estimate": len(rows), "comment": comment,
             })
-        return out
-
-    def get_columns(self, schema: str, table: str) -> list[dict[str, Any]]:
-        rows = self._tables[(schema, table)][1]
-        if not rows:
-            return []
-        cols = list(rows[0].keys())
-        out = []
-        for i, c in enumerate(cols):
-            sample = next((r[c] for r in rows if r[c] is not None), None)
-            nullable = any(r.get(c) is None for r in rows)
+        for (schema, name), spec in getattr(self, "_synth", {}).items():
             out.append({
-                "name": c, "data_type": self._infer_type(sample),
-                "nullable": nullable, "position": i + 1, "comment": None,
+                "schema": schema, "name": name, "kind": "table",
+                "row_estimate": spec["row_estimate"], "comment": spec["comment"],
             })
         return out
 
+    def get_columns(self, schema: str, table: str) -> list[dict[str, Any]]:
+        if (schema, table) in self._tables:
+            rows = self._tables[(schema, table)][1]
+            if not rows:
+                return []
+            cols = list(rows[0].keys())
+            out = []
+            for i, c in enumerate(cols):
+                sample = next((r[c] for r in rows if r[c] is not None), None)
+                nullable = any(r.get(c) is None for r in rows)
+                out.append({
+                    "name": c, "data_type": self._infer_type(sample),
+                    "nullable": nullable, "position": i + 1, "comment": None,
+                })
+            return out
+        # synthetic, generated lazily
+        rows = self._synth_rows(schema, table)
+        if not rows:
+            return []
+        cols = list(rows[0].keys())
+        return [{"name": c, "data_type": self._infer_type(
+                    next((r[c] for r in rows if r[c] is not None), None)),
+                 "nullable": False, "position": i + 1, "comment": None}
+                for i, c in enumerate(cols)]
+
     def sample_values(self, schema: str, table: str, column: str, limit: int = 2000) -> list[Any]:
-        rows = self._tables[(schema, table)][1]
+        if (schema, table) in self._tables:
+            rows = self._tables[(schema, table)][1]
+        else:
+            rows = self._synth_rows(schema, table)
         vals = [r[column] for r in rows if r.get(column) is not None]
         return vals[:limit]
+
+    def sample_rows(self, schema: str, table: str, limit: int = 500) -> list[dict[str, Any]]:
+        if (schema, table) in self._tables:
+            rows = self._tables[(schema, table)][1]
+        else:
+            rows = self._synth_rows(schema, table)
+        return [dict(r) for r in rows[:limit]]
+
+    # -- lazy synthetic-row generation (cached) ------------------------------ #
+    def _synth_rows(self, schema: str, table: str) -> list[dict[str, Any]]:
+        if not hasattr(self, "_synth"):
+            return []
+        spec = self._synth.get((schema, table))
+        if not spec:
+            return []
+        cache = getattr(self, "_synth_cache", None)
+        if cache is None:
+            cache = self._synth_cache = {}
+        if (schema, table) in cache:
+            return cache[(schema, table)]
+        rng = random.Random(spec["seed"])
+        n_rows = min(spec["row_estimate"] or 50, 400) or 50
+        ent = table.split("_", 1)[-1].lower()
+        # a deterministic, varied column set
+        cols = [f"{ent}_id"]
+        pool = ["code", "label", "status", "amount", "quantity", "created_at",
+                "updated_at", "country_code", "currency", "email", "ref",
+                "score", "flag_active", "rate", "region"]
+        rng.shuffle(pool)
+        cols += pool[: spec["n_cols"] - 1]
+        rows = []
+        for i in range(n_rows):
+            row: dict[str, Any] = {}
+            for c in cols:
+                row[c] = self._synth_value(c, i, rng)
+            rows.append(row)
+        cache[(schema, table)] = rows
+        return rows
+
+    @staticmethod
+    def _synth_value(col: str, i: int, rng: random.Random) -> Any:
+        if col.endswith("_id") or col == "ref":
+            return 100000 + i
+        if "amount" in col or "rate" in col or "score" in col:
+            return round(rng.uniform(1, 5000), 2)
+        if "quantity" in col:
+            return rng.randint(1, 100)
+        if col in ("created_at", "updated_at"):
+            return f"2024-{rng.randint(1,12):02d}-{rng.randint(1,28):02d}"
+        if col == "country_code":
+            return rng.choice(["FR", "DE", "ES", "IT", "BE", "NL"])
+        if col == "currency":
+            return rng.choice(["EUR", "USD", "GBP"])
+        if col == "email":
+            return f"user{i}@example.com"
+        if col == "status":
+            return rng.choice(["OPEN", "CLOSED", "PENDING", "ARCHIVED"])
+        if col.startswith("flag"):
+            return rng.choice([0, 1])
+        if col == "region":
+            return rng.choice(["EMEA", "AMER", "APAC"])
+        return rng.choice(["A", "B", "C", "D"]) + str(rng.randint(10, 99))
 
 
 # --------------------------------------------------------------------------- #
@@ -303,6 +456,12 @@ class OracleConnector(Connector):
             f'WHERE "{column}" IS NOT NULL FETCH FIRST {int(limit)} ROWS ONLY')
         return [r[0] for r in cur]
 
+    def sample_rows(self, schema: str, table: str, limit: int = 500) -> list[dict[str, Any]]:
+        cur = self._conn.cursor()
+        cur.execute(f'SELECT * FROM "{schema}"."{table}" FETCH FIRST {int(limit)} ROWS ONLY')
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur]
+
 
 class ClickHouseConnector(Connector):
     kind = "clickhouse"
@@ -338,6 +497,11 @@ class ClickHouseConnector(Connector):
             f'SELECT `{column}` FROM `{schema}`.`{table}` '
             f'WHERE `{column}` IS NOT NULL LIMIT {int(limit)}')
         return [r[0] for r in res.result_rows]
+
+    def sample_rows(self, schema: str, table: str, limit: int = 500) -> list[dict[str, Any]]:
+        res = self._client.query(f'SELECT * FROM `{schema}`.`{table}` LIMIT {int(limit)}')
+        cols = res.column_names
+        return [dict(zip(cols, row)) for row in res.result_rows]
 
 
 # --------------------------------------------------------------------------- #
