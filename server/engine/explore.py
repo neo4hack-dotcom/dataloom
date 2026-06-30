@@ -184,6 +184,87 @@ def document_table(snap: dict, ds_id: str, model: str | None = None) -> dict[str
 
 
 # --------------------------------------------------------------------------- #
+#  Table identity card + content synthesis (cached)                           #
+# --------------------------------------------------------------------------- #
+_SYNTH_SYSTEM = (
+    "You are a senior data analyst writing a reusable 'identity card' for a database table, "
+    "grounded strictly in the profiled evidence (columns, sample values, cardinality, links). "
+    "Reply STRICTLY in JSON: {"
+    "\"synthesis\": \"a 3-5 sentence plain-English summary of what this table contains and how it is used\", "
+    "\"content\": \"what one row represents (the grain), e.g. 'one row per order line'\", "
+    "\"data_kind\": \"one of: transactional, reference, dimension, fact, staging, mapping/config, event, snapshot, aggregate\", "
+    "\"products\": [\"business products/domains this data serves\"], "
+    "\"key_fields\": [\"the columns that identify or partition a row\"], "
+    "\"suggested_partition\": \"a column that logically splits the table into sub-populations (e.g. platform_id, country, tenant), or null\"}. "
+    "English, concrete, no invented facts."
+)
+
+
+def synthesize_table(snap: dict, ds_id: str, model: str | None = None) -> dict[str, Any]:
+    """LLM 'identity card' + content synthesis for a table (caller caches it)."""
+    if not llm.is_up():
+        raise LLMUnavailable()
+    ds = _find_dataset(snap, ds_id)
+    if not ds:
+        raise ValueError("dataset not found")
+    doc = (snap.get("docs", {}).get(ds_id, {}) or {})
+    cols_brief = []
+    for c in ds["columns"]:
+        p = c["profile"]
+        tv = ", ".join(str(v) for v in [x["value"] for x in p.get("top_values", [])[:4]])
+        cols_brief.append(f"{c['name']} ({p['semantic_type']}; distinct={p['distinct_ratio']:.2f}"
+                          + (f"; e.g. {tv}" if tv else "") + ")")
+    prompt = (f"Table {ds['schema']}.{ds['name']} (~{ds['row_estimate']} rows).\n"
+              + (f"Known definition: {doc.get('definition')}\n" if doc.get("definition") else "")
+              + "Columns:\n- " + "\n- ".join(cols_brief))
+    out = llm.generate(system=_SYNTH_SYSTEM, prompt=prompt, model=model, timeout=150.0)
+    if not isinstance(out, dict) or "_raw" in out:
+        raise LLMUnavailable()
+    out.setdefault("synthesis", "")
+    out.setdefault("content", "")
+    out.setdefault("data_kind", "")
+    out.setdefault("products", [])
+    out.setdefault("key_fields", [])
+    out.setdefault("suggested_partition", None)
+    return out
+
+
+# --------------------------------------------------------------------------- #
+#  ETL mapping-table → role detection (for mass lineage/doc extraction)        #
+# --------------------------------------------------------------------------- #
+_MAPPING_SYSTEM = (
+    "You analyse a CONFIGURATION / MAPPING table used by an ETL. Given its column names and "
+    "sample values, identify which column holds each mapping role. Roles: "
+    "target_table, target_column, target_definition, source_table, source_column, transformation. "
+    "Any role may be absent (null). "
+    "Reply STRICTLY in JSON: {\"roles\": {\"target_table\": \"colname|null\", "
+    "\"target_column\": \"colname|null\", \"target_definition\": \"colname|null\", "
+    "\"source_table\": \"colname|null\", \"source_column\": \"colname|null\", "
+    "\"transformation\": \"colname|null\"}, \"confidence\": 0-100, "
+    "\"reason\": \"one short sentence\"}. Use EXACT column names from the input."
+)
+
+
+def detect_mapping_roles(snap: dict, ds_id: str, sample_rows: list[dict], model: str | None = None) -> dict[str, Any]:
+    if not llm.is_up():
+        raise LLMUnavailable()
+    ds = _find_dataset(snap, ds_id)
+    if not ds:
+        raise ValueError("dataset not found")
+    cols = [c["name"] for c in ds["columns"]]
+    preview = sample_rows[:8]
+    prompt = (f"Mapping table {ds['schema']}.{ds['name']}.\nColumns: {', '.join(cols)}\n\n"
+              f"Sample rows (JSON):\n{__import__('json').dumps(preview, ensure_ascii=False, default=str)[:2500]}")
+    out = llm.generate(system=_MAPPING_SYSTEM, prompt=prompt, model=model, timeout=120.0)
+    if not isinstance(out, dict) or "_raw" in out:
+        raise LLMUnavailable()
+    out.setdefault("roles", {})
+    out.setdefault("confidence", 60)
+    out.setdefault("reason", "")
+    return out
+
+
+# --------------------------------------------------------------------------- #
 #  Feature 3 — Catalog Copilot (conversational RAG)                           #
 # --------------------------------------------------------------------------- #
 _COPILOT_SYSTEM = (

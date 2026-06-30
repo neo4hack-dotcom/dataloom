@@ -1,4 +1,4 @@
-import type { AgentRun, CatalogState, Connection, Health, LlmConfig, LlmTest } from "./types";
+import type { AgentRun, CatalogState, Connection, DiscoveredTable, Health, LlmConfig, LlmTest } from "./types";
 
 export class VersionConflict extends Error {
   serverVersion: number;
@@ -44,10 +44,18 @@ export const api = {
   deleteConnection: (id: string, baseVersion: number) =>
     req<{ ok: boolean; version: number }>(`/connections/${id}`, { method: "DELETE", baseVersion }),
 
+  // -- discovery & scope (big-volume sources) --
+  discover: (cid: string, baseVersion: number) =>
+    req<{ ok: boolean; count: number; tables: DiscoveredTable[]; version: number }>(
+      `/connections/${cid}/discover`, { method: "POST", baseVersion }),
+  setScope: (cid: string, tables: string[], baseVersion: number) =>
+    req<{ ok: boolean; count: number; version: number }>(
+      `/connections/${cid}/scope`, { method: "POST", body: JSON.stringify({ tables }), baseVersion }),
+
   // -- pipeline --
-  launchRun: (connection_id: string, agents: string[] | null, baseVersion: number) =>
+  launchRun: (connection_id: string, agents: string[] | null, baseVersion: number, tables?: string[] | null) =>
     req<{ run: AgentRun; version: number }>("/runs", {
-      method: "POST", body: JSON.stringify({ connection_id, agents }), baseVersion,
+      method: "POST", body: JSON.stringify({ connection_id, agents, tables }), baseVersion,
     }),
   getRun: (id: string) => req<AgentRun>(`/runs/${id}`),
 
@@ -58,7 +66,10 @@ export const api = {
     }),
   deleteDataset: (dsId: string, baseVersion: number) =>
     req<{ ok: boolean; version: number }>(`/datasets/${encodeURIComponent(dsId)}`, { method: "DELETE", baseVersion }),
-  updateDatasetMeta: (dsId: string, patch: { definition?: string; domain?: string; comment?: string }, baseVersion: number) =>
+  updateDatasetMeta: (dsId: string, patch: {
+    definition?: string; domain?: string; comment?: string;
+    identity?: Record<string, unknown>; synthesis?: string; partitioning?: Record<string, unknown>;
+  }, baseVersion: number) =>
     req<{ ok: boolean; version: number }>(`/datasets/${encodeURIComponent(dsId)}/meta`, {
       method: "PATCH", body: JSON.stringify(patch), baseVersion,
     }),
@@ -74,7 +85,8 @@ export const api = {
     }),
   editColumnDoc: (
     dsId: string, col: string,
-    patch: { definition?: string; calculation?: string | null; status?: string; sensitivity?: string },
+    patch: { definition?: string; calculation?: string | null; status?: string; sensitivity?: string;
+             source_file?: string; source_field?: string },
     baseVersion: number
   ) => req<{ ok: boolean; version: number }>(
     `/columns/${encodeURIComponent(dsId)}/${encodeURIComponent(col)}/doc`,
@@ -205,6 +217,27 @@ export const api = {
     req<{ ok: boolean; explanation: RelExplanation }>("/llm/explain-relationship", {
       method: "POST", body: JSON.stringify(body),
     }),
+
+  // -- table identity card + content synthesis (cached) --
+  synthesizeTable: (dataset_id: string, baseVersion: number) =>
+    req<{ ok: boolean; result: TableSynthesis; version: number }>("/llm/synthesize-table", {
+      method: "POST", body: JSON.stringify({ dataset_id }), baseVersion,
+    }),
+
+  // -- ETL mapping import --
+  mappingDetect: (dataset_id: string) =>
+    req<{ ok: boolean; roles: Record<string, string | null>; confidence: number; reason: string;
+          columns: string[]; sample: Record<string, unknown>[] }>("/mapping/detect", {
+      method: "POST", body: JSON.stringify({ dataset_id }),
+    }),
+  mappingApply: (dataset_id: string, roles: Record<string, string | null>, baseVersion: number) =>
+    req<{ ok: boolean; edges_added: number; docs_added: number; rows_scanned: number; version: number }>(
+      "/mapping/apply", { method: "POST", body: JSON.stringify({ dataset_id, roles }), baseVersion }),
+
+  // -- full backup restore --
+  importBackup: (backup: unknown, mode: "replace" | "merge", baseVersion: number) =>
+    req<{ ok: boolean; mode: string; summary: Record<string, number>; version: number }>(
+      "/import/backup", { method: "POST", body: JSON.stringify({ backup, mode }), baseVersion }),
 };
 
 export interface ColumnSuggestion {
@@ -220,6 +253,15 @@ export interface TableSuggestion {
   table_definition: string;
   domain: string;
   columns: { name: string; definition: string; calculation: string | null; sensitivity: string; confidence: number }[];
+}
+
+export interface TableSynthesis {
+  synthesis: string;
+  content: string;
+  data_kind: string;
+  products: string[];
+  key_fields: string[];
+  suggested_partition: string | null;
 }
 
 export interface CompletionItem {

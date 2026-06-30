@@ -47,6 +47,13 @@ export interface ColumnDoc {
   source?: string;
   status?: "suggested" | "validated" | "rejected";
   sensitivity?: string;
+  source_file?: string;   // optional origin file/topic (csv/txt/bulk/API/kafka…)
+  source_field?: string;  // optional origin field name in that source
+}
+
+export interface TablePartition {
+  value: string;
+  note?: string;
 }
 
 export interface DatasetDoc {
@@ -55,15 +62,32 @@ export interface DatasetDoc {
   doc_source?: string;
   doc_confidence?: number;
   columns?: Record<string, ColumnDoc>;
+  // identity card + reusable content synthesis (manual or LLM, all persisted)
+  identity?: { content?: string; data_kind?: string; products?: string[]; key_fields?: string[]; [k: string]: unknown };
+  synthesis?: string;
+  synthesis_source?: string;
+  synthesis_at?: number;
+  suggested_partition?: string | null;
+  partitioning?: { column?: string; explanation?: string; partitions?: TablePartition[] };
+}
+
+export interface DiscoveredTable {
+  schema: string;
+  name: string;
+  row_estimate: number;
+  comment: string | null;
 }
 
 export interface Connection {
   id: string;
   name: string;
-  type: "demo" | "oracle" | "clickhouse";
+  type: "demo" | "oracle" | "clickhouse" | "okf";
   config: Record<string, unknown>;
   llm_model?: string | null;
   created_at: number;
+  discovered_tables?: DiscoveredTable[];
+  discovered_at?: number;
+  scope?: string[];
 }
 
 export interface MatchPair {

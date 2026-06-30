@@ -5,7 +5,7 @@ import {
   Banknote, MapPin, Phone, Fingerprint, Tag, FileText, Package,
   ChevronRight, Layers,
 } from "lucide-react";
-import { useCatalog } from "../store";
+import { useCatalog, useScopedDatasets } from "../store";
 import { api } from "../api";
 import { EmptyState } from "../lib/ui";
 import type { Column, Dataset } from "../types";
@@ -19,7 +19,7 @@ export function Library({ goto }: { goto: (t: Tab) => void }) {
   const [q, setQ] = useState("");
   const [openDs, setOpenDs] = useState<string | null>(null);
 
-  const datasets = state?.datasets ?? [];
+  const datasets = useScopedDatasets();
   const llmUp = health?.llm.up ?? false;
 
   if (datasets.length === 0) {
