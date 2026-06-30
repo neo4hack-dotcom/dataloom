@@ -35,7 +35,7 @@ class ProfilerAgent:
     id = "profiler"
     name = "Profiler"
     icon = "scan-line"
-    desc = "Introspecte les sources, échantillonne et calcule l'empreinte de chaque colonne (types sémantiques, MinHash, qualité)."
+    desc = "Introspects sources, samples values, and computes each column's fingerprint (semantic types, MinHash, quality)."
 
     def run(self, store, conn: dict[str, Any], log: LogFn) -> dict[str, Any]:
         c = build_connector(conn)
@@ -74,7 +74,7 @@ class ProfilerAgent:
                 "comment": t.get("comment"),
                 "columns": col_profiles,
             })
-            log("ok", f"  ✓ {t['schema']}.{t['name']} — {len(cols)} colonnes profilées.")
+            log("ok", f"  ✓ {t['schema']}.{t['name']} — {len(cols)} columns profiled.")
         store.upsert_datasets(datasets)
         return {"datasets": len(datasets),
                 "columns": sum(len(d["columns"]) for d in datasets)}
@@ -85,16 +85,16 @@ class LinkerAgent:
     id = "linker"
     name = "Linker"
     icon = "git-compare"
-    desc = "Compare toutes les colonnes par tests de valeurs (overlap réel) et infère les clés PK→FK et les champs identiques."
+    desc = "Compares every column via real value tests (overlap) and infers PK→FK keys and identical fields."
 
     def run(self, store, conn: dict[str, Any], log: LogFn) -> dict[str, Any]:
         cols = store.all_columns()
-        log("info", f"Analyse croisée de {len(cols)} colonnes (MinHash + inclusion)…")
+        log("info", f"Cross-analysing {len(cols)} columns (MinHash + inclusion)…")
         result = analyze_catalog(cols)
         store.set_matches(result["matches"])
         store.set_relationships(result["relationships"])
-        log("ok", f"  ✓ {len(result['relationships'])} relations PK/FK inférées.")
-        log("ok", f"  ✓ {len(result['matches'])} paires « même champ » détectées.")
+        log("ok", f"  ✓ {len(result['relationships'])} PK/FK relationships inferred.")
+        log("ok", f"  ✓ {len(result['matches'])} 'same field' pairs detected.")
         for r in result["relationships"][:6]:
             log("info", f"     {r['child']['column']} → {r['parent']['column']} "
                         f"({r['confidence']:.0f}%)")
@@ -107,11 +107,11 @@ class DocumenterAgent:
     id = "documenter"
     name = "Documenter"
     icon = "book-open"
-    desc = "Le LLM local rédige la définition fonctionnelle et la méthode de calcul de chaque table/colonne, avec score de confiance."
+    desc = "The local LLM writes the functional definition and calculation method for each table/column, with a confidence score."
 
     def run(self, store, conn: dict[str, Any], log: LogFn) -> dict[str, Any]:
         up = llm.is_up()
-        log("info", "LLM local détecté." if up else "LLM injoignable — fallback heuristique.")
+        log("info", "Local LLM detected." if up else "LLM unreachable — using heuristic fallback.")
         datasets = [d for d in store.datasets() if d["connection_id"] == conn["id"]]
         written = 0
         for d in datasets:
@@ -120,29 +120,29 @@ class DocumenterAgent:
             if up:
                 try:
                     out = llm.generate(
-                        system=("Tu es un data steward senior. Tu documentes un data "
-                                "warehouse en français, de façon concise et métier. "
-                                "Réponds STRICTEMENT en JSON."),
+                        system=("You are a senior data steward. You document a data "
+                                "warehouse in English, concisely and from a business "
+                                "perspective. Reply STRICTLY in JSON."),
                         prompt=(
-                            f"Table {d['schema']}.{d['name']} ({d['row_estimate']} lignes).\n"
-                            f"Colonnes: {cols_brief}.\n\n"
-                            "Renvoie un JSON: {\"definition\": string (1-2 phrases métier), "
-                            "\"domain\": string (ex: Ventes, Finance, Client), "
+                            f"Table {d['schema']}.{d['name']} ({d['row_estimate']} rows).\n"
+                            f"Columns: {cols_brief}.\n\n"
+                            "Return JSON: {\"definition\": string (1-2 business sentences), "
+                            "\"domain\": string (e.g. Sales, Finance, Customer), "
                             "\"columns\": [{\"name\": string, \"definition\": string, "
                             "\"calculation\": string|null}]}"),
                         model=conn.get("llm_model"),
                     )
                     doc = out if isinstance(out, dict) else {}
                 except Exception as e:  # pragma: no cover
-                    log("warn", f"  ! LLM erreur sur {d['name']}: {e}")
+                    log("warn", f"  ! LLM error on {d['name']}: {e}")
                     doc = {}
             else:
                 doc = {}
 
             self._apply(store, d, doc, heuristic=not up)
             written += 1
-            conf = "LLM" if (up and doc.get("columns")) else "heuristique"
-            log("ok", f"  ✓ {d['name']} documentée ({conf}).")
+            conf = "LLM" if (up and doc.get("columns")) else "heuristic"
+            log("ok", f"  ✓ {d['name']} documented ({conf}).")
         return {"datasets_documented": written}
 
     def _apply(self, store, d, doc, heuristic: bool):
@@ -169,7 +169,7 @@ class LineageAgent:
     id = "lineage"
     name = "Lineage"
     icon = "workflow"
-    desc = "Reconstruit les chaînes d'information depuis les relations, les tables de mapping et tes notes de modèle."
+    desc = "Rebuilds data chains from relationships, mapping tables, and your model notes."
 
     def run(self, store, conn: dict[str, Any], log: LogFn) -> dict[str, Any]:
         edges = []
@@ -198,7 +198,7 @@ class LineageAgent:
         # 3) lineage from user model notes (free text "A -> B")
         for note in store.model_notes():
             for a, b in _parse_arrows(note["text"], names):
-                edges.append({"from": a, "to": b, "via": "note modèle",
+                edges.append({"from": a, "to": b, "via": "model note",
                               "kind": "manual", "confidence": 90})
         # dedupe
         seen = set(); uniq = []
@@ -207,7 +207,7 @@ class LineageAgent:
             if k not in seen and e["from"] != e["to"]:
                 seen.add(k); uniq.append(e)
         store.set_lineage(uniq)
-        log("ok", f"  ✓ {len(uniq)} arêtes de lineage reconstruites.")
+        log("ok", f"  ✓ {len(uniq)} lineage edges rebuilt.")
         return {"edges": len(uniq)}
 
 
@@ -216,7 +216,7 @@ class QaAgent:
     id = "qa"
     name = "QA Reviewer"
     icon = "shield-check"
-    desc = "Audite le catalogue : définitions manquantes, faible qualité, PII non signalée, contradictions."
+    desc = "Audits the catalog: missing definitions, low quality, unflagged PII, contradictions."
 
     def run(self, store, conn: dict[str, Any], log: LogFn) -> dict[str, Any]:
         issues = []
@@ -224,24 +224,24 @@ class QaAgent:
             doc = store.get_dataset_doc(d["id"]) or {}
             if not doc.get("definition"):
                 issues.append({"severity": "high", "dataset_id": d["id"],
-                               "message": f"{d['name']}: définition de table manquante"})
+                               "message": f"{d['name']}: missing table definition"})
             for c in d["columns"]:
                 p = c["profile"]
                 cdoc = (doc.get("columns") or {}).get(c["name"], {})
                 if p["sensitivity"] == "PII":
                     issues.append({"severity": "high", "dataset_id": d["id"],
-                                   "message": f"{d['name']}.{c['name']}: PII ({p['semantic_type']}) — vérifier la classification"})
+                                   "message": f"{d['name']}.{c['name']}: PII ({p['semantic_type']}) — verify classification"})
                 if p["quality_score"] < 60:
                     issues.append({"severity": "medium", "dataset_id": d["id"],
-                                   "message": f"{d['name']}.{c['name']}: qualité faible ({p['quality_score']})"})
+                                   "message": f"{d['name']}.{c['name']}: low quality ({p['quality_score']})"})
                 if not cdoc.get("definition"):
                     issues.append({"severity": "low", "dataset_id": d["id"],
-                                   "message": f"{d['name']}.{c['name']}: définition manquante"})
+                                   "message": f"{d['name']}.{c['name']}: missing definition"})
         store.set_qa_issues(issues)
         sev = {"high": 0, "medium": 0, "low": 0}
         for i in issues:
             sev[i["severity"]] += 1
-        log("ok", f"  ✓ Audit: {sev['high']} critiques, {sev['medium']} moyens, {sev['low']} mineurs.")
+        log("ok", f"  ✓ Audit: {sev['high']} critical, {sev['medium']} medium, {sev['low']} low.")
         return {"issues": len(issues), **sev}
 
 
@@ -250,7 +250,7 @@ class GlossaryAgent:
     id = "glossary"
     name = "Glossary"
     icon = "tags"
-    desc = "Extrait les termes métier récurrents et les relie aux colonnes du catalogue."
+    desc = "Extracts recurring business terms and links them to catalog columns."
 
     def run(self, store, conn: dict[str, Any], log: LogFn) -> dict[str, Any]:
         from collections import defaultdict
@@ -268,7 +268,7 @@ class GlossaryAgent:
                     "definition": store.glossary_def(term) or "",
                 })
         store.merge_glossary(terms)
-        log("ok", f"  ✓ {len(terms)} termes métier extraits.")
+        log("ok", f"  ✓ {len(terms)} business terms extracted.")
         return {"terms": len(terms)}
 
 
@@ -295,16 +295,16 @@ def run_pipeline(store, conn: dict[str, Any], agent_ids: list[str], run_id: str)
             agent = AGENTS[aid]
             store.update_run(run_id, {"current_agent": agent.name,
                                       "progress": round(idx / total, 3)})
-            log("agent", f"▶ Agent « {agent.name} » démarré.")
+            log("agent", f"▶ Agent '{agent.name}' started.")
             res = agent.run(store, conn, log)
             summary[aid] = res
             store.update_run(run_id, {"progress": round((idx + 1) / total, 3)})
-            log("agent", f"■ Agent « {agent.name} » terminé.")
+            log("agent", f"■ Agent '{agent.name}' finished.")
         store.update_run(run_id, {"status": "done", "finished_at": time.time(),
                                   "summary": summary, "progress": 1.0})
-        log("done", "Pipeline terminé ✅")
+        log("done", "Pipeline complete ✅")
     except Exception as e:  # pragma: no cover
-        log("error", f"Échec: {e}")
+        log("error", f"Failed: {e}")
         log("error", traceback.format_exc().splitlines()[-1])
         store.update_run(run_id, {"status": "error", "finished_at": time.time(),
                                   "error": str(e)})
@@ -318,31 +318,31 @@ def _guess_domain(name: str) -> str:
     if any(k in n for k in ("PAY", "INVOICE", "FINANCE", "AMOUNT")):
         return "Finance"
     if any(k in n for k in ("CLIENT", "CUSTOMER", "USER")):
-        return "Client"
+        return "Customer"
     if any(k in n for k in ("ORDER", "SALE", "ITEM", "PRODUCT")):
-        return "Ventes"
+        return "Sales"
     if any(k in n for k in ("EVENT", "CLICK", "WEB")):
         return "Web Analytics"
-    return "Général"
+    return "General"
 
 
 def _heuristic_table_def(d: dict) -> str:
-    return (f"Table « {d['name']} » du schéma {d['schema']} "
-            f"(~{d['row_estimate']} lignes). Documentation à valider.")
+    return (f"Table '{d['name']}' in schema {d['schema']} "
+            f"(~{d['row_estimate']} rows). Documentation to be validated.")
 
 
 def _heuristic_col_def(c: dict) -> str:
     p = c["profile"]
     st = p["semantic_type"]
     base = {
-        "email": "Adresse e-mail.", "iban": "Identifiant bancaire (IBAN).",
-        "siret": "Numéro SIRET (établissement).", "integer_id": "Identifiant numérique.",
-        "iso_date": "Date.", "iso_datetime": "Horodatage.",
-        "currency_code": "Code devise ISO 4217.", "country_code": "Code pays ISO.",
-        "code": "Code métier catégoriel.", "ipv4": "Adresse IP.", "url": "URL.",
-    }.get(st, f"Champ « {c['name']} ».")
+        "email": "Email address.", "iban": "Bank account identifier (IBAN).",
+        "siret": "SIRET number (business establishment).", "integer_id": "Numeric identifier.",
+        "iso_date": "Date.", "iso_datetime": "Timestamp.",
+        "currency_code": "ISO 4217 currency code.", "country_code": "ISO country code.",
+        "code": "Business category code.", "ipv4": "IP address.", "url": "URL.",
+    }.get(st, f"Field '{c['name']}'.")
     if p["is_key_candidate"]:
-        base += " Probable clé."
+        base += " Likely a key."
     return base
 
 

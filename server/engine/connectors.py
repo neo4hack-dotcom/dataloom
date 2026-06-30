@@ -111,8 +111,8 @@ class DemoConnector(Connector):
             products.append({
                 "product_id": pid,
                 "sku": f"SKU-{rng.randint(1000,9999)}-{rng.choice('ABCDEF')}",
-                "label": rng.choice(["Chaise", "Table", "Lampe", "Canapé", "Étagère", "Bureau"]) + f" {pid}",
-                "category": rng.choice(["MOBILIER", "DECO", "LUMINAIRE", "RANGEMENT"]),
+                "label": rng.choice(["Chair", "Table", "Lamp", "Sofa", "Shelf", "Desk"]) + f" {pid}",
+                "category": rng.choice(["FURNITURE", "DECOR", "LIGHTING", "STORAGE"]),
                 "unit_price": round(rng.uniform(9.9, 899.0), 2),
             })
 
@@ -214,17 +214,17 @@ class DemoConnector(Connector):
             })
 
         oracle_tables = {
-            ("SALES", "CUSTOMERS"): ("table", customers, "Référentiel clients (source de vérité)"),
-            ("SALES", "ORDERS"): ("table", orders, "Commandes clients"),
-            ("SALES", "ORDER_ITEMS"): ("table", order_items, "Lignes de commande"),
-            ("SALES", "PRODUCTS"): ("table", products, "Catalogue produits"),
-            ("FINANCE", "PAYMENTS"): ("table", payments, "Encaissements"),
-            ("DWH", "DIM_CLIENT"): ("table", dim_client, "Dimension client (étoile)"),
-            ("DWH", "MAP_COUNTRY"): ("table", map_country, "Table de mapping pays"),
-            ("DWH", "ETL_MAPPING"): ("table", etl_mapping, "Table de configuration ETL (source→cible)"),
+            ("SALES", "CUSTOMERS"): ("table", customers, "Customer master data (source of truth)"),
+            ("SALES", "ORDERS"): ("table", orders, "Customer orders"),
+            ("SALES", "ORDER_ITEMS"): ("table", order_items, "Order line items"),
+            ("SALES", "PRODUCTS"): ("table", products, "Product catalog"),
+            ("FINANCE", "PAYMENTS"): ("table", payments, "Payments received"),
+            ("DWH", "DIM_CLIENT"): ("table", dim_client, "Customer dimension (star schema)"),
+            ("DWH", "MAP_COUNTRY"): ("table", map_country, "Country mapping table"),
+            ("DWH", "ETL_MAPPING"): ("table", etl_mapping, "ETL configuration table (source→target)"),
         }
         clickhouse_tables = {
-            ("analytics", "events"): ("table", events, "Flux d'évènements web (clickstream)"),
+            ("analytics", "events"): ("table", events, "Web event stream (clickstream)"),
         }
 
         self._tables = oracle_tables if self.flavor == "oracle" else {**clickhouse_tables}

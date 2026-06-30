@@ -91,16 +91,16 @@ def compare_columns(col_a: dict[str, Any], col_b: dict[str, Any]) -> dict[str, A
 
     reasons = []
     if overlap >= 0.9:
-        reasons.append(f"{int(overlap*100)}% des valeurs d'un champ sont incluses dans l'autre")
+        reasons.append(f"{int(overlap*100)}% of one field's values are contained in the other")
     elif vj >= 0.3:
-        reasons.append(f"chevauchement de valeurs (Jaccard≈{vj:.2f})")
+        reasons.append(f"value overlap (Jaccard≈{vj:.2f})")
     if name_sim >= 0.5:
-        reasons.append(f"noms proches (sim={name_sim:.2f})")
+        reasons.append(f"similar names (sim={name_sim:.2f})")
     if type_match:
-        reasons.append(f"même type sémantique « {pa['semantic_type']} »")
+        reasons.append(f"same semantic type '{pa['semantic_type']}'")
     if pa["format_masks"] and pb["format_masks"] and \
        pa["format_masks"][0]["mask"] == pb["format_masks"][0]["mask"]:
-        reasons.append(f"même format « {pa['format_masks'][0]['mask']} »")
+        reasons.append(f"same format '{pa['format_masks'][0]['mask']}'")
 
     return {
         "name_sim": name_sim,
@@ -136,7 +136,7 @@ def infer_relationship(col_a: dict[str, Any], col_b: dict[str, Any], cmp: dict[s
         "kind": "foreign_key",
         "containment": cont,
         "confidence": confidence,
-        "reason": f"{int(cont*100)}% des valeurs de {child['name']} existent dans {parent['name']} (clé)",
+        "reason": f"{int(cont*100)}% of {child['name']}'s values exist in {parent['name']} (key)",
     }
 
 
