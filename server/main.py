@@ -47,7 +47,10 @@ app.mount("/mcp", _mcp_asgi_app)
 _DIST = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "dist"))
 
 # Routes reachable without a session (everything else under /api requires one).
-_PUBLIC_API_PATHS = {"/api/auth/status", "/api/auth/bootstrap", "/api/auth/login"}
+_PUBLIC_API_PATHS = {
+    "/api/auth/status", "/api/auth/bootstrap", "/api/auth/login",
+    "/api/auth/request-reset", "/api/auth/confirm-reset",
+}
 
 
 @app.middleware("http")
@@ -112,6 +115,37 @@ def auth_login(body: LoginIn):
     user = store.get_user_by_username(body.username.strip())
     if not user or not user.get("active", True) or not auth.verify_password(body.password, user["password_hash"]):
         raise HTTPException(401, "Invalid username or password")
+    token = auth.create_token()
+    store.create_session(token, user["id"])
+    return {"token": token, "user": auth.public_user(user)}
+
+
+@app.post("/api/auth/request-reset")
+def request_admin_reset():
+    """Locked out? Generate a one-time code, printed to the backend console only."""
+    if not store.has_users():
+        raise HTTPException(400, "No account exists yet — use the setup screen instead.")
+    code = store.create_admin_reset_code()
+    print(f"\n=== Admin account reset requested ===\n"
+          f"Confirmation code: {code}  (valid 15 minutes)\n"
+          f"Enter it on the login screen to recreate the admin account.\n", flush=True)
+    return {"ok": True, "message": "A confirmation code was printed to the backend server console."}
+
+
+class ResetConfirmIn(BaseModel):
+    code: str
+    username: str
+    password: str
+
+
+@app.post("/api/auth/confirm-reset")
+def confirm_admin_reset(body: ResetConfirmIn):
+    if not store.verify_admin_reset_code(body.code):
+        raise HTTPException(401, "Invalid or expired code")
+    if len(body.password) < 8:
+        raise HTTPException(422, "Password must be at least 8 characters")
+    store.reset_all_users()
+    user = store.add_user(body.username.strip(), auth.hash_password(body.password), auth.ADMIN)
     token = auth.create_token()
     store.create_session(token, user["id"])
     return {"token": token, "user": auth.public_user(user)}

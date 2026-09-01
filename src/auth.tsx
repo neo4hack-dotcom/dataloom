@@ -9,6 +9,8 @@ interface AuthCtx {
   bootstrapNeeded: boolean;
   login: (username: string, password: string) => Promise<void>;
   bootstrap: (username: string, password: string) => Promise<void>;
+  requestReset: () => Promise<string>;
+  confirmReset: (code: string, username: string, password: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -65,8 +67,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, []);
 
+  const requestReset = useCallback(async () => {
+    const r = await api.requestAdminReset();
+    return r.message;
+  }, []);
+
+  const confirmReset = useCallback(async (code: string, username: string, password: string) => {
+    const { token, user } = await api.confirmAdminReset(code, username, password);
+    setAuthToken(token);
+    setUser(user);
+  }, []);
+
   return (
-    <Ctx.Provider value={{ user, loading, bootstrapNeeded, login, bootstrap, logout }}>
+    <Ctx.Provider value={{ user, loading, bootstrapNeeded, login, bootstrap, requestReset, confirmReset, logout }}>
       {children}
     </Ctx.Provider>
   );
