@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
 import {
   GitCompare, KeyRound, Check, X, Sparkles, ArrowRight, Grid3x3, Link2, Plus, Trash2,
-  MessageSquareText, Loader2,
+  MessageSquareText, Loader2, RefreshCw,
 } from "lucide-react";
 import { useCatalog } from "../store";
 import { api, type RelExplanation } from "../api";
-import { EmptyState, shortDs, confidenceColor } from "../lib/ui";
+import { EmptyState, shortDs, confidenceColor, timeAgo } from "../lib/ui";
 
 type SubTab = "keys" | "samefield" | "heatmap";
 
@@ -48,7 +48,7 @@ export function Relationships() {
 }
 
 function KeysView() {
-  const { state, health, mutate, toast } = useCatalog();
+  const { state, health, mutate, refresh, toast } = useCatalog();
   const rels = state?.relationships ?? [];
   const [expl, setExpl] = useState<Record<number, RelExplanation>>({});
   const [explaining, setExplaining] = useState<number | null>(null);
@@ -63,7 +63,8 @@ function KeysView() {
     await mutate((v) => api.deleteRelationship(idx, v));
     toast("ok", "Relationship deleted");
   };
-  const explain = async (idx: number, r: typeof rels[number]) => {
+  const explain = async (idx: number, r: typeof rels[number], force = false) => {
+    if (!force && r.explanation) { setExpl((e) => ({ ...e, [idx]: r.explanation! })); return; }
     setExplaining(idx);
     try {
       const res = await api.explainRelationship({
@@ -71,6 +72,7 @@ function KeysView() {
         parent_dataset_id: r.parent.dataset_id, parent_column: r.parent.column,
       });
       setExpl((e) => ({ ...e, [idx]: res.explanation }));
+      await refresh(); // pulls the newly cached explanation into state.relationships
     } catch (e) {
       toast("err", (e as Error).message.includes("503") ? "Local LLM unavailable" : "Explanation failed");
     } finally { setExplaining(null); }
@@ -78,7 +80,9 @@ function KeysView() {
 
   return (
     <div className="space-y-2">
-      {rels.map((r, i) => (
+      {rels.map((r, i) => {
+        const shown = expl[i] ?? r.explanation;
+        return (
         <div key={i} className={`card p-3.5 ${r.status === "rejected" ? "opacity-50" : ""}`}>
           <div className="flex items-center gap-3">
             <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-amber-500/10 text-amber-500">
@@ -100,10 +104,12 @@ function KeysView() {
               <span className="truncate text-[11px] text-slate-400">{r.reason}</span>
             </div>
             <span className={`chip shrink-0 ${confidenceColor(r.confidence)} bg-current/10 font-mono`}>{r.confidence.toFixed(0)}%</span>
-            <button onClick={() => explain(i, r)} disabled={!llmUp || explaining === i}
-              className="btn-ghost !p-1.5 text-loom-500 shrink-0" title="Explain in business terms (AI)">
-              {explaining === i ? <Loader2 size={15} className="animate-spin" /> : <MessageSquareText size={15} />}
-            </button>
+            {!shown && (
+              <button onClick={() => explain(i, r)} disabled={!llmUp || explaining === i}
+                className="btn-ghost !p-1.5 text-loom-500 shrink-0" title="Explain in business terms (AI)">
+                {explaining === i ? <Loader2 size={15} className="animate-spin" /> : <MessageSquareText size={15} />}
+              </button>
+            )}
             {r.status === "validated" ? (
               <span className="chip shrink-0 bg-emerald-500/10 text-emerald-500"><Check size={12} /> validated</span>
             ) : (
@@ -116,23 +122,31 @@ function KeysView() {
               <Trash2 size={15} />
             </button>
           </div>
-          {expl[i] && (
+          {shown && (
             <div className="mt-2.5 flex items-start gap-2 rounded-lg border border-loom-500/30 bg-loom-500/5 p-2.5 text-sm animate-fade-in">
               <Sparkles size={15} className="mt-0.5 shrink-0 text-loom-500" />
               <div className="flex-1">
-                <span className="text-slate-700 dark:text-slate-200">{expl[i].meaning}</span>
+                <span className="text-slate-700 dark:text-slate-200">{shown.meaning}</span>
                 <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
-                  <span className="chip bg-loom-500/10 font-mono text-loom-500">{expl[i].cardinality}</span>
-                  <span className={`chip ${confidenceColor(expl[i].confidence)} bg-current/10`}>conf. {expl[i].confidence}%</span>
-                  {expl[i].caveats.map((c, k) => (
+                  <span className="chip bg-loom-500/10 font-mono text-loom-500">{shown.cardinality}</span>
+                  <span className={`chip ${confidenceColor(shown.confidence)} bg-current/10`}>conf. {shown.confidence}%</span>
+                  {(shown as any).cached_at && (
+                    <span className="chip bg-slate-500/10 text-slate-400">cached {timeAgo((shown as any).cached_at)} ago</span>
+                  )}
+                  {shown.caveats.map((c, k) => (
                     <span key={k} className="text-slate-400">· {c}</span>
                   ))}
                 </div>
               </div>
+              <button onClick={() => explain(i, r, true)} disabled={!llmUp || explaining === i}
+                className="btn-ghost !p-1 text-slate-400 shrink-0" title="Regenerate">
+                {explaining === i ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+              </button>
             </div>
           )}
         </div>
-      ))}
+        );
+      })}
       <AddRelForm />
     </div>
   );

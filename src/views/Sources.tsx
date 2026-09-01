@@ -1,20 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Database, RefreshCw, Loader2, Search, CheckSquare, Square, Zap, Save,
-  Filter, Layers, Table2, X, ListChecks, MinusSquare,
+  Filter, Layers, Table2, X, ListChecks, MinusSquare, Hash, OctagonX,
+  CheckCircle2, XCircle, MinusCircle, RotateCcw,
 } from "lucide-react";
 import { useCatalog } from "../store";
 import { api } from "../api";
-import { EmptyState } from "../lib/ui";
+import { EmptyState, timeAgo } from "../lib/ui";
+import { useConfirm } from "../components/ConfirmDialog";
 import type { DiscoveredTable } from "../types";
 import type { Tab } from "../App";
 
 const ROW_H = 38;       // px per row (for windowing)
 const OVERSCAN = 8;
+const DEFAULT_SAMPLE_LIMIT = 500;
+const LARGE_BATCH_WARNING = 50;
+
+const fmtCount = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(n >= 100000 ? 0 : 1)}k` : n.toLocaleString();
 
 export function Sources({ goto }: { goto: (t: Tab) => void }) {
   const { state, activeConn, setActiveConn, mutate, setActiveRun, toast } = useCatalog();
   const conns = state?.connections ?? [];
+  const { confirm, dialog } = useConfirm();
 
   // which connection are we scoping
   const [cid, setCid] = useState<string>(
@@ -31,9 +38,13 @@ export function Sources({ goto }: { goto: (t: Tab) => void }) {
   const [schemaFilter, setSchemaFilter] = useState<string>("all");
   const [onlyNew, setOnlyNew] = useState(false);
   const [sel, setSel] = useState<Set<string>>(() => new Set(conn?.scope ?? []));
+  const [rowLimits, setRowLimits] = useState<Record<string, number>>(() => conn?.scope_row_limits ?? {});
 
-  // re-seed selection when switching connection
-  useEffect(() => { setSel(new Set(conn?.scope ?? [])); }, [cid]); // eslint-disable-line
+  // re-seed selection + limits when switching connection
+  useEffect(() => {
+    setSel(new Set(conn?.scope ?? []));
+    setRowLimits(conn?.scope_row_limits ?? {});
+  }, [cid]); // eslint-disable-line
 
   const cataloged = useMemo(() => {
     const s = new Set<string>();
@@ -54,6 +65,10 @@ export function Sources({ goto }: { goto: (t: Tab) => void }) {
       return true;
     });
   }, [inventory, q, schemaFilter, onlyNew, cataloged]);
+
+  const selectedTables = useMemo(
+    () => inventory.filter((t) => sel.has(`${t.schema}.${t.name}`)),
+    [inventory, sel]);
 
   const discover = async () => {
     if (!cid) return;
@@ -80,15 +95,24 @@ export function Sources({ goto }: { goto: (t: Tab) => void }) {
     return n;
   });
 
+  const limitsForSelection = () => {
+    const out: Record<string, number> = {};
+    for (const k of sel) out[k] = rowLimits[k] ?? DEFAULT_SAMPLE_LIMIT;
+    return out;
+  };
+
   const saveScope = async () => {
-    await mutate((v) => api.setScope(cid, [...sel], v));
+    await mutate((v) => api.setScope(cid, [...sel], v, limitsForSelection()));
     toast("ok", `Scope saved — ${sel.size} table(s)`);
   };
 
   const runOnScope = async () => {
     if (sel.size === 0) { toast("err", "Select at least one table"); return; }
-    await mutate((v) => api.setScope(cid, [...sel], v));
-    const r = await mutate((v) => api.launchRun(cid, null, v, [...sel]));
+    // Chain off the version returned by setScope itself — mutate()'s own `v` here would
+    // still be the stale pre-save version captured by this closure, causing a 409.
+    const scopeR = await mutate((v) => api.setScope(cid, [...sel], v, limitsForSelection()));
+    if (!scopeR) return;
+    const r = await mutate(() => api.launchRun(cid, null, scopeR.version, [...sel]));
     if (r) {
       setActiveConn(cid);
       setActiveRun(r.run);
@@ -164,6 +188,13 @@ export function Sources({ goto }: { goto: (t: Tab) => void }) {
           {/* virtualized table list */}
           <VirtualList rows={filtered} sel={sel} onToggle={toggle} cataloged={cataloged} />
 
+          {/* row-count check for the selected candidates — opt-in, sequential, cancellable */}
+          {sel.size > 0 && (
+            <RowCountPanel cid={cid} tables={selectedTables}
+              cachedCounts={conn?.scope_row_counts} cachedCountsAt={conn?.scope_row_counts_at}
+              rowLimits={rowLimits} setRowLimits={setRowLimits} confirm={confirm} />
+          )}
+
           {/* footer actions */}
           <div className="sticky bottom-0 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white/90 p-3 backdrop-blur dark:border-slate-800 dark:bg-slate-950/80">
             <span className="text-sm text-slate-500">
@@ -176,6 +207,173 @@ export function Sources({ goto }: { goto: (t: Tab) => void }) {
           </div>
         </>
       )}
+      {dialog}
+    </div>
+  );
+}
+
+// ---- row-count check: opt-in, sequential (never parallel), cancellable ---- //
+type CountStatus = "idle" | "counting" | "ok" | "cancelled" | "error";
+
+function RowCountPanel({ cid, tables, cachedCounts, cachedCountsAt, rowLimits, setRowLimits, confirm }: {
+  cid: string; tables: DiscoveredTable[];
+  cachedCounts?: Record<string, number>; cachedCountsAt?: Record<string, number>;
+  rowLimits: Record<string, number>;
+  setRowLimits: (f: (r: Record<string, number>) => Record<string, number>) => void;
+  confirm: ReturnType<typeof useConfirm>["confirm"];
+}) {
+  const key = (t: DiscoveredTable) => `${t.schema}.${t.name}`;
+  const [status, setStatus] = useState<Record<string, CountStatus>>({});
+  const [counts, setCounts] = useState<Record<string, number>>(cachedCounts ?? {});
+  const [countedAt, setCountedAt] = useState<Record<string, number>>(cachedCountsAt ?? {});
+  const [queryIds, setQueryIds] = useState<Record<string, string>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [running, setRunning] = useState(false);
+  const stopRef = useRef(false);
+
+  // reset ephemeral run state (not the cache) when the candidate set changes
+  useEffect(() => {
+    setStatus({}); setQueryIds({});
+    setCounts(cachedCounts ?? {});
+    setCountedAt(cachedCountsAt ?? {});
+  }, [cid]); // eslint-disable-line
+
+  const pollForQueryId = async (tableKey: string) => {
+    for (let i = 0; i < 12; i++) {
+      await new Promise((r) => setTimeout(r, 150));
+      try {
+        const { active } = await api.listQueries();
+        const match = active.find((qq) =>
+          qq.connection_id === cid && qq.operation === "count_rows" && qq.target === tableKey);
+        if (match) { setQueryIds((q) => ({ ...q, [tableKey]: match.id })); return; }
+      } catch { /* ignore */ }
+      if (status[tableKey] !== "counting") return; // already resolved
+    }
+  };
+
+  const countOne = async (t: DiscoveredTable) => {
+    const k = key(t);
+    setStatus((s) => ({ ...s, [k]: "counting" }));
+    setErrors((e) => { const n = { ...e }; delete n[k]; return n; });
+    pollForQueryId(k); // fire and forget — updates queryIds when the active query shows up
+    const r = await api.countTableRows(cid, t.schema, t.name);
+    setQueryIds((q) => { const n = { ...q }; delete n[k]; return n; });
+    if (r.ok && r.count != null) {
+      setCounts((c) => ({ ...c, [k]: r.count! }));
+      setCountedAt((a) => ({ ...a, [k]: Date.now() / 1000 }));
+      setStatus((s) => ({ ...s, [k]: "ok" }));
+    } else if (r.cancelled) {
+      setStatus((s) => ({ ...s, [k]: "cancelled" }));
+    } else {
+      setErrors((e) => ({ ...e, [k]: r.error || "count failed" }));
+      setStatus((s) => ({ ...s, [k]: "error" }));
+    }
+  };
+
+  const runChecks = async (only?: DiscoveredTable[]) => {
+    const targets = only ?? tables.filter((t) => status[key(t)] !== "ok");
+    if (targets.length === 0) return;
+    if (!only && targets.length > LARGE_BATCH_WARNING) {
+      const ok = await confirm({
+        title: "Count a large batch of tables?",
+        message: `You're about to run ${targets.length} sequential row counts against the source. This can take a while — each one is tracked in the Query Log and you can stop the batch at any time.`,
+        tone: "warning", steps: 1, confirmLabel: "Start",
+      });
+      if (!ok) return;
+    }
+    stopRef.current = false;
+    setRunning(true);
+    for (const t of targets) {
+      if (stopRef.current) break;
+      await countOne(t);
+    }
+    setRunning(false);
+  };
+
+  const stopBatch = async () => {
+    stopRef.current = true;
+    const counting = tables.find((t) => status[key(t)] === "counting");
+    const qid = counting && queryIds[key(counting)];
+    if (qid) { try { await api.cancelQuery(qid); } catch { /* ignore */ } }
+  };
+
+  const cancelOne = async (t: DiscoveredTable) => {
+    const qid = queryIds[key(t)];
+    if (qid) { try { await api.cancelQuery(qid); } catch { /* ignore */ } }
+  };
+
+  const setLimit = (t: DiscoveredTable, v: number) => {
+    setRowLimits((r) => ({ ...r, [key(t)]: Math.max(1, v) }));
+  };
+
+  const checkedCount = tables.filter((t) => status[key(t)] === "ok" || counts[key(t)] != null).length;
+
+  return (
+    <div className="card p-4">
+      <div className="mb-2 flex items-center gap-2">
+        <Hash size={15} className="text-loom-500" />
+        <div className="text-sm font-semibold">Row-count check</div>
+        <span className="text-xs text-slate-400">— optional, one table at a time, never touches the DB until you ask</span>
+        <span className="ml-auto chip bg-slate-500/10 text-slate-400">{checkedCount}/{tables.length} checked</span>
+        {running ? (
+          <button onClick={stopBatch} className="btn-outline !px-2.5 text-xs text-rose-500 hover:bg-rose-500/10">
+            <OctagonX size={13} /> Stop
+          </button>
+        ) : (
+          <button onClick={() => runChecks()} className="btn-primary !px-2.5 text-xs">
+            <RefreshCw size={13} /> Check row counts
+          </button>
+        )}
+      </div>
+
+      <div className="max-h-72 space-y-1 overflow-auto">
+        {tables.map((t) => {
+          const k = key(t);
+          const st = status[k] ?? (counts[k] != null ? "ok" : "idle");
+          const count = counts[k];
+          const at = countedAt[k];
+          return (
+            <div key={k} className="flex items-center gap-2 rounded-lg border border-slate-100 px-2.5 py-1.5 text-xs dark:border-slate-800/60">
+              <span className="w-24 shrink-0 truncate text-slate-400">{t.schema}</span>
+              <span className="min-w-0 flex-1 truncate font-mono">{t.name}</span>
+
+              {st === "idle" && <span className="shrink-0 text-slate-400">not checked</span>}
+              {st === "counting" && (
+                <span className="flex shrink-0 items-center gap-1.5 text-loom-500">
+                  <Loader2 size={12} className="animate-spin" /> counting…
+                  <button onClick={() => cancelOne(t)} className="text-rose-500 hover:underline">cancel</button>
+                </span>
+              )}
+              {st === "ok" && count != null && (
+                <span className="flex shrink-0 items-center gap-1.5 text-emerald-500">
+                  <CheckCircle2 size={12} /> {fmtCount(count)} rows
+                  {at && <span className="text-slate-400">({timeAgo(at)} ago)</span>}
+                  <button onClick={() => countOne(t)} title="Recount" className="text-slate-400 hover:text-loom-500"><RotateCcw size={11} /></button>
+                </span>
+              )}
+              {st === "cancelled" && (
+                <span className="flex shrink-0 items-center gap-1.5 text-slate-400">
+                  <MinusCircle size={12} /> cancelled
+                  <button onClick={() => countOne(t)} className="text-loom-500 hover:underline">retry</button>
+                </span>
+              )}
+              {st === "error" && (
+                <span className="flex shrink-0 items-center gap-1.5 text-rose-500" title={errors[k]}>
+                  <XCircle size={12} /> failed
+                  <button onClick={() => countOne(t)} className="text-loom-500 hover:underline">retry</button>
+                </span>
+              )}
+
+              <label className="flex shrink-0 items-center gap-1 text-slate-400">
+                sample
+                <input type="number" min={1} value={rowLimits[k] ?? DEFAULT_SAMPLE_LIMIT}
+                  onChange={(e) => setLimit(t, Number(e.target.value) || 1)}
+                  className="input !w-20 !py-0.5 !px-1.5 text-right text-xs" />
+              </label>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -201,8 +399,6 @@ function VirtualList({ rows, sel, onToggle, cataloged }: {
   const end = Math.min(total, Math.ceil((scrollTop + h) / ROW_H) + OVERSCAN);
   const visible = rows.slice(start, end);
 
-  const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(n >= 100000 ? 0 : 1)}k` : String(n);
-
   return (
     <div ref={ref} className="card overflow-auto" style={{ height: 480 }}>
       <div style={{ height: total * ROW_H, position: "relative" }}>
@@ -221,7 +417,7 @@ function VirtualList({ rows, sel, onToggle, cataloged }: {
               <span className="w-28 shrink-0 truncate text-[11px] font-medium text-slate-400">{t.schema}</span>
               <span className="min-w-0 flex-1 truncate font-mono">{t.name}</span>
               {inCat && <span className="chip shrink-0 bg-emerald-500/10 text-emerald-500">in catalog</span>}
-              <span className="w-16 shrink-0 text-right font-mono text-[11px] text-slate-400">{fmt(t.row_estimate)}</span>
+              <span className="w-16 shrink-0 text-right font-mono text-[11px] text-slate-400">{fmtCount(t.row_estimate)}</span>
             </div>
           );
         })}

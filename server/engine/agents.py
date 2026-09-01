@@ -42,6 +42,7 @@ class ProfilerAgent:
         log("info", f"Connection '{conn['name']}' ({conn['type']}) established.")
         tables = c.list_tables()
         scope = conn.get("_scope")  # list of "schema.name" — the user-selected scope
+        run_id = conn.get("_run_id")
         if scope:
             scope_set = set(scope)
             tables = [t for t in tables if f"{t['schema']}.{t['name']}" in scope_set]
@@ -50,6 +51,12 @@ class ProfilerAgent:
             log("info", f"{len(tables)} tables detected. Profiling…")
         datasets = []
         for t in tables:
+            if run_id and store.is_run_cancel_requested(run_id):
+                log("warn", f"⏹ Cancelled — stopping before {t['schema']}.{t['name']}.")
+                break
+            # sample_values/sample_rows apply the table's confirmed row-count-check limit
+            # automatically (via TrackedConnector, built with this connection's
+            # scope_row_limits) — falls back to the admin row_fetch_limit otherwise.
             cols = c.get_columns(t["schema"], t["name"])
             ds_id = f"{conn['id']}::{t['schema']}.{t['name']}"
             col_profiles = []
@@ -287,11 +294,17 @@ def run_pipeline(store, conn: dict[str, Any], agent_ids: list[str], run_id: str)
     def log(level: str, msg: str):
         store.append_run_log(run_id, {"ts": time.time(), "level": level, "message": msg})
 
+    conn = {**conn, "_run_id": run_id}
     store.update_run(run_id, {"status": "running", "started_at": time.time()})
     summary: dict[str, Any] = {}
     try:
         total = len(agent_ids)
         for idx, aid in enumerate(agent_ids):
+            if store.is_run_cancel_requested(run_id):
+                log("warn", "⏹ Cancelled by user.")
+                store.update_run(run_id, {"status": "cancelled", "finished_at": time.time(),
+                                          "summary": summary})
+                return
             agent = AGENTS[aid]
             store.update_run(run_id, {"current_agent": agent.name,
                                       "progress": round(idx / total, 3)})
@@ -300,6 +313,10 @@ def run_pipeline(store, conn: dict[str, Any], agent_ids: list[str], run_id: str)
             summary[aid] = res
             store.update_run(run_id, {"progress": round((idx + 1) / total, 3)})
             log("agent", f"■ Agent '{agent.name}' finished.")
+        if store.is_run_cancel_requested(run_id):
+            log("warn", "⏹ Cancelled by user.")
+            store.update_run(run_id, {"status": "cancelled", "finished_at": time.time(), "summary": summary})
+            return
         store.update_run(run_id, {"status": "done", "finished_at": time.time(),
                                   "summary": summary, "progress": 1.0})
         log("done", "Pipeline complete ✅")

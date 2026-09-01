@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef } from "react";
 import {
   ScanLine, GitCompare, BookOpen, Workflow, ShieldCheck, Tags, Bot,
-  Zap, Loader2, CheckCircle2, XCircle, Terminal, ShieldAlert, X,
+  Zap, Loader2, CheckCircle2, XCircle, Terminal, ShieldAlert, X, OctagonX, MinusCircle,
 } from "lucide-react";
 import { useCatalog } from "../store";
 import { api } from "../api";
 import { EmptyState } from "../lib/ui";
+import { useConfirm } from "../components/ConfirmDialog";
 
 const ICONS: Record<string, typeof Bot> = {
   "scan-line": ScanLine, "git-compare": GitCompare, "book-open": BookOpen,
@@ -21,6 +22,7 @@ export function Agents() {
   const { state, health, activeRun, setActiveRun, mutate, toast } = useCatalog();
   const logRef = useRef<HTMLDivElement>(null);
   const agents = health?.agents ?? [];
+  const { confirm, dialog } = useConfirm();
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -31,8 +33,31 @@ export function Agents() {
 
   const launch = async (agentIds: string[] | null) => {
     if (!firstConn) { toast("err", "Add a connection first."); return; }
+    const alreadyDone = state?.runs.some((r) =>
+      r.connection_id === firstConn.id && r.status === "done" &&
+      (agentIds ? agentIds.every((id) => r.agents.includes(id)) : true));
+    if (alreadyDone) {
+      const ok = await confirm({
+        title: "Already run",
+        message: agentIds
+          ? "This agent already completed successfully on this connection. Running it again may overwrite existing profiling/documentation."
+          : "This pipeline already completed successfully on this connection. Running it again may overwrite existing profiling/documentation.",
+        tone: "warning", steps: 2, confirmLabel: "Run again",
+      });
+      if (!ok) return;
+    }
     const r = await mutate((v) => api.launchRun(firstConn.id, agentIds, v));
     if (r) { setActiveRun(r.run); toast("info", "Agents started"); }
+  };
+
+  const stopRun = async () => {
+    if (!activeRun) return;
+    try {
+      await api.cancelRun(activeRun.id);
+      toast("info", "Stopping…");
+    } catch (e) {
+      toast("err", (e as Error).message);
+    }
   };
 
   const dismissQA = async (idx: number) => {
@@ -140,6 +165,7 @@ export function Agents() {
                   className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs hover:bg-slate-100 dark:hover:bg-slate-800">
                   {r.status === "done" ? <CheckCircle2 size={14} className="text-emerald-500" /> :
                     r.status === "error" ? <XCircle size={14} className="text-rose-500" /> :
+                    r.status === "cancelled" ? <MinusCircle size={14} className="text-slate-400" /> :
                     <Loader2 size={14} className="animate-spin text-loom-500" />}
                   <span className="font-mono text-slate-400">{r.id.replace("run_", "#")}</span>
                   <span className="text-slate-500">{r.agents.length} agents</span>
@@ -157,12 +183,17 @@ export function Agents() {
           <Terminal size={15} className="text-loom-500" />
           <span className="text-sm font-semibold">Agent console</span>
           {running && (
-            <span className="ml-auto flex items-center gap-1.5 text-xs text-emerald-500">
-              <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+            <span className="ml-auto flex items-center gap-2 text-xs">
+              <span className="flex items-center gap-1.5 text-emerald-500">
+                <span className="relative flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                </span>
+                {activeRun?.current_agent}
               </span>
-              {activeRun?.current_agent}
+              <button onClick={stopRun} className="btn-outline !px-2 !py-1 text-xs text-rose-500 hover:bg-rose-500/10">
+                <OctagonX size={12} /> Stop
+              </button>
             </span>
           )}
         </div>
@@ -195,8 +226,14 @@ export function Agents() {
               <CheckCircle2 size={14} /> Done.
             </div>
           )}
+          {activeRun?.status === "cancelled" && (
+            <div className="mt-2 flex items-center gap-1.5 text-slate-400">
+              <MinusCircle size={14} /> Cancelled.
+            </div>
+          )}
         </div>
       </div>
+      {dialog}
     </div>
   );
 }

@@ -22,7 +22,7 @@ from store import Store
 from engine import llm, agents, explore
 from engine import search as search_engine
 from engine.connectors import build_connector
-from engine.query_registry import registry as query_registry
+from engine.query_registry import registry as query_registry, QueryCancelled
 from mcp_server import create_mcp_app
 
 store = Store()
@@ -345,6 +345,34 @@ def del_connection(cid: str, x_base_version: int | None = Header(default=None)):
     return {"ok": True, "version": store.version}
 
 
+class ConnectionPatchIn(BaseModel):
+    name: str | None = None
+    config: dict[str, Any] | None = None
+    llm_model: str | None = None
+
+
+@app.patch("/api/connections/{cid}")
+def edit_connection(cid: str, body: ConnectionPatchIn, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    try:
+        conn = store.update_connection(cid, body.model_dump(exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return {"connection": conn, "version": store.version}
+
+
+@app.post("/api/connections/{cid}/ping")
+def ping_connection(cid: str):
+    conn = store.get_connection(cid)
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    try:
+        ok = build_connector(conn, store=store, source="discover").ping()
+    except Exception:
+        ok = False
+    return {"ok": ok}
+
+
 # -- discovery & scope (big-volume sources) ---------------------------------- #
 @app.post("/api/connections/{cid}/discover")
 def discover_tables(cid: str, x_base_version: int | None = Header(default=None)):
@@ -368,6 +396,7 @@ def discover_tables(cid: str, x_base_version: int | None = Header(default=None))
 
 class ScopeIn(BaseModel):
     tables: list[str]  # ["schema.name", ...]
+    row_limits: dict[str, int] | None = None  # {"schema.name": limit} — set after a row-count check
 
 
 @app.post("/api/connections/{cid}/scope")
@@ -375,8 +404,36 @@ def set_scope(cid: str, body: ScopeIn, x_base_version: int | None = Header(defau
     guard(x_base_version)
     if not store.get_connection(cid):
         raise HTTPException(404, "connection not found")
-    store.set_scope(cid, body.tables)
+    store.set_scope(cid, body.tables, body.row_limits)
     return {"ok": True, "count": len(body.tables), "version": store.version}
+
+
+class TableCountIn(BaseModel):
+    schema_name: str
+    name: str
+
+
+@app.post("/api/connections/{cid}/tables/count")
+def count_table_rows(cid: str, body: TableCountIn):
+    """
+    Live SELECT COUNT(*) on ONE table, opt-in and cancellable — never called in bulk.
+    Tracked through the same query registry as profiling (see /api/queries), so it
+    shows up in the Query Log and can be killed from there too.
+    """
+    conn = store.get_connection(cid)
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    connector = build_connector(conn, store=store, source="discover")
+    try:
+        count = connector.count_rows(body.schema_name, body.name)
+    except QueryCancelled:
+        return {"ok": False, "cancelled": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    if count is None:
+        return {"ok": False, "error": "Row counting is not supported for this source type."}
+    store.set_table_row_count(cid, f"{body.schema_name}.{body.name}", count)
+    return {"ok": True, "count": count}
 
 
 # -- runs / pipeline --------------------------------------------------------- #
@@ -412,6 +469,16 @@ def get_run(run_id: str):
     if not run:
         raise HTTPException(404, "run not found")
     return run
+
+
+@app.post("/api/runs/{run_id}/cancel")
+def cancel_run(run_id: str):
+    if not store.get_run(run_id):
+        raise HTTPException(404, "run not found")
+    ok = store.request_run_cancel(run_id)
+    if not ok:
+        raise HTTPException(409, "run already finished")
+    return {"ok": True}
 
 
 # -- catalog CRUD ------------------------------------------------------------ #
@@ -989,15 +1056,17 @@ class SuggestColumnIn(BaseModel):
 
 @app.post("/api/llm/suggest-column")
 def llm_suggest_column(body: SuggestColumnIn):
-    """Feature 1 — evidence-grounded suggestion for a single column."""
+    """Feature 1 — evidence-grounded suggestion for a single column. Cached — the
+    client only calls this when there's no cached suggestion yet, or on Regenerate."""
     snap = store.snapshot(trim=False)
     try:
-        return {"ok": True, "suggestion": explore.suggest_column(
-            snap, body.dataset_id, body.column, model=_llm_model())}
+        suggestion = explore.suggest_column(snap, body.dataset_id, body.column, model=_llm_model())
     except explore.LLMUnavailable:
         raise HTTPException(503, "Local LLM unavailable")
     except ValueError as e:
         raise HTTPException(404, str(e))
+    store.cache_column_suggestion(body.dataset_id, body.column, suggestion)
+    return {"ok": True, "suggestion": suggestion, "version": store.version}
 
 
 class ApplyColumnIn(BaseModel):
@@ -1030,15 +1099,17 @@ class DocumentTableIn(BaseModel):
 
 @app.post("/api/llm/document-table")
 def llm_document_table(body: DocumentTableIn):
-    """Feature 2 — document every column of a table in one call (preview, not applied)."""
+    """Feature 2 — document every column of a table in one call (preview, not applied).
+    Cached — the client only calls this when there's no cached result yet, or on Regenerate."""
     snap = store.snapshot(trim=False)
     try:
-        return {"ok": True, "result": explore.document_table(
-            snap, body.dataset_id, model=_llm_model())}
+        result = explore.document_table(snap, body.dataset_id, model=_llm_model())
     except explore.LLMUnavailable:
         raise HTTPException(503, "Local LLM unavailable")
     except ValueError as e:
         raise HTTPException(404, str(e))
+    store.cache_table_suggestion(body.dataset_id, result)
+    return {"ok": True, "result": result, "version": store.version}
 
 
 class ApplyTableIn(BaseModel):
@@ -1107,16 +1178,21 @@ class ExplainRelIn(BaseModel):
 
 @app.post("/api/llm/explain-relationship")
 def llm_explain_relationship(body: ExplainRelIn):
-    """Feature 5 — plain-business meaning + cardinality of an inferred link."""
+    """Feature 5 — plain-business meaning + cardinality of an inferred link. Cached
+    on the relationship itself — the client only calls this when there's no cached
+    explanation yet, or on Regenerate."""
     snap = store.snapshot(trim=False)
     try:
-        return {"ok": True, "explanation": explore.explain_relationship(
+        explanation = explore.explain_relationship(
             snap, body.child_dataset_id, body.child_column,
-            body.parent_dataset_id, body.parent_column, model=_llm_model())}
+            body.parent_dataset_id, body.parent_column, model=_llm_model())
     except explore.LLMUnavailable:
         raise HTTPException(503, "Local LLM unavailable")
     except ValueError as e:
         raise HTTPException(404, str(e))
+    store.cache_relationship_explanation(
+        body.child_dataset_id, body.child_column, body.parent_dataset_id, body.parent_column, explanation)
+    return {"ok": True, "explanation": explanation, "version": store.version}
 
 
 # -- table identity card + content synthesis (cached) ------------------------ #
@@ -1158,7 +1234,8 @@ class MappingDetectIn(BaseModel):
 
 @app.post("/api/mapping/detect")
 def mapping_detect(body: MappingDetectIn):
-    """LLM detects which columns of a config/mapping table hold each ETL role."""
+    """LLM detects which columns of a config/mapping table hold each ETL role.
+    Cached — the client only calls this when there's no cached detection yet, or on Regenerate."""
     snap = store.snapshot(trim=False)
     ds = next((d for d in snap["datasets"] if d["id"] == body.dataset_id), None)
     if not ds:
@@ -1174,7 +1251,9 @@ def mapping_detect(body: MappingDetectIn):
         out = explore.detect_mapping_roles(snap, body.dataset_id, rows, model=_llm_model())
     except explore.LLMUnavailable:
         raise HTTPException(503, "Local LLM unavailable")
-    return {"ok": True, **out, "columns": [c["name"] for c in ds["columns"]], "sample": rows[:8]}
+    result = {**out, "columns": [c["name"] for c in ds["columns"]], "sample": rows[:8]}
+    store.cache_mapping_detection(body.dataset_id, result)
+    return {"ok": True, **result, "version": store.version}
 
 
 class MappingApplyIn(BaseModel):

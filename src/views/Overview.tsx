@@ -1,15 +1,14 @@
 import { useMemo } from "react";
 import {
   Table2, Columns3, GitCompare, Workflow, ShieldAlert, Sparkles,
-  Zap, Database, TrendingUp, Lock,
+  Database, TrendingUp, Lock,
 } from "lucide-react";
 import { useCatalog } from "../store";
-import { api } from "../api";
 import { Stat, Donut, EmptyState, semanticColor, shortDs } from "../lib/ui";
 import type { Tab } from "../App";
 
 export function Overview({ goto }: { goto: (t: Tab) => void }) {
-  const { state, mutate, setActiveRun, toast } = useCatalog();
+  const { state } = useCatalog();
 
   const m = useMemo(() => {
     const datasets = state?.datasets ?? [];
@@ -31,13 +30,6 @@ export function Overview({ goto }: { goto: (t: Tab) => void }) {
   }, [state]);
 
   const hasData = m.datasets > 0;
-  const firstConn = state?.connections[0];
-
-  const launchMagic = async () => {
-    if (!firstConn) { goto("connections"); return; }
-    const r = await mutate((v) => api.launchRun(firstConn.id, null, v));
-    if (r) { setActiveRun(r.run); goto("agents"); toast("info", "Magic Enrich started ✨"); }
-  };
 
   const semPalette = ["#3b74f5", "#ec4899", "#10b981", "#f59e0b", "#8b5cf6", "#06b6d4", "#f97316", "#14b8a6"];
   const semSegments = Object.entries(m.semCount)
@@ -57,12 +49,9 @@ export function Overview({ goto }: { goto: (t: Tab) => void }) {
             <h2 className="mt-1 text-2xl font-bold">Weave your data dictionary</h2>
             <p className="mt-1 max-w-xl text-sm text-slate-500">
               Value-fingerprinting, key detection via real overlap tests, and enrichment
-              by local LLM agents. One click and DOINg.Catalogue rebuilds your data chains.
+              by local LLM agents — reconstructing your data chains from Connections or Sources &amp; scope.
             </p>
           </div>
-          <button onClick={launchMagic} className="btn-primary !px-5 !py-2.5 text-base shadow-lg">
-            <Zap size={18} /> Magic Enrich
-          </button>
         </div>
       </div>
 
@@ -75,7 +64,9 @@ export function Overview({ goto }: { goto: (t: Tab) => void }) {
       ) : (
         <>
           {/* KPIs */}
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+            <Stat label="Connected sources" value={state?.connections.length ?? 0}
+              icon={<Database size={22} />} accent="text-emerald-500" />
             <Stat label="Tables" value={m.datasets} icon={<Table2 size={22} />} />
             <Stat label="Columns" value={m.cols} icon={<Columns3 size={22} />} />
             <Stat label="PK/FK Relationships" value={state?.relationships.length ?? 0}
