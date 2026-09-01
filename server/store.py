@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
+import string
 import threading
 import time
 import copy
@@ -36,6 +38,7 @@ _DEFAULT: dict[str, Any] = {
     "audit": [],
     "users": [],
     "sessions": {},
+    "admin_reset": {"code": None, "expires_at": None},
     "settings": {
         "theme": "dark",
         "llm": {
@@ -97,6 +100,7 @@ class Store:
         """Ensure settings.llm/connectors/mcp exist; migrate legacy settings.llm_model → llm.model."""
         db.setdefault("users", [])
         db.setdefault("sessions", {})
+        db.setdefault("admin_reset", {"code": None, "expires_at": None})
         s = db.setdefault("settings", {})
         llm = s.get("llm")
         if not isinstance(llm, dict):
@@ -160,6 +164,7 @@ class Store:
         # users/sessions/secrets never travel through the catalog snapshot
         db.pop("users", None)
         db.pop("sessions", None)
+        db.pop("admin_reset", None)
         mcp_cfg = db.get("settings", {}).get("mcp")
         if isinstance(mcp_cfg, dict):
             mcp_cfg.pop("api_token_hash", None)
@@ -666,3 +671,29 @@ class Store:
         with self._lock:
             self._db["sessions"].pop(token, None)
             self._flush()
+
+    # -- admin account recovery ------------------------------------------------- #
+    def create_admin_reset_code(self, ttl_seconds: int = 900) -> str:
+        """Generate a one-time code for the locked-out-admin recovery flow.
+
+        The code is only ever shown on the backend console (see /api/auth/request-reset
+        in main.py) — never returned over the API — so completing a reset requires
+        access to the machine running the server, not just the login page.
+        """
+        with self._lock:
+            code = "".join(secrets.choice(string.digits) for _ in range(6))
+            self._db["admin_reset"] = {"code": code, "expires_at": time.time() + ttl_seconds}
+            self._flush()
+            return code
+
+    def verify_admin_reset_code(self, code: str) -> bool:
+        r = self._db.get("admin_reset") or {}
+        return bool(code) and r.get("code") == code and (r.get("expires_at") or 0) > time.time()
+
+    def reset_all_users(self):
+        """Wipe every account and session — used once a reset code has been verified."""
+        with self._lock:
+            self._db["users"] = []
+            self._db["sessions"] = {}
+            self._db["admin_reset"] = {"code": None, "expires_at": None}
+            self._bump("auth.admin_reset", "all accounts cleared")
