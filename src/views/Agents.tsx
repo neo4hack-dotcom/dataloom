@@ -201,7 +201,7 @@ export function Agents() {
         {activeRun && (
           <div className="px-4 pt-3">
             <div className="h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
-              <div className="h-full rounded-full bg-gradient-to-r from-loom-500 to-violet-500 transition-all duration-500"
+              <div className="h-full rounded-full bg-gradient-to-r from-loom-400 to-loom-600 transition-all duration-500"
                 style={{ width: `${Math.round((activeRun.progress ?? 0) * 100)}%` }} />
             </div>
           </div>

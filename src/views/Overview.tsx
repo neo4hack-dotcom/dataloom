@@ -1,14 +1,15 @@
 import { useMemo } from "react";
 import {
   Table2, Columns3, GitCompare, Workflow, ShieldAlert, Sparkles,
-  Database, TrendingUp, Lock,
+  Database, TrendingUp, Lock, HeartPulse, Flame, Eye,
 } from "lucide-react";
 import { useCatalog } from "../store";
-import { Stat, Donut, EmptyState, semanticColor, shortDs } from "../lib/ui";
+import { Stat, Donut, EmptyState, semanticColor, shortDs, HealthRing, healthColor } from "../lib/ui";
+import { computeDatasetHealth } from "../lib/health";
 import type { Tab } from "../App";
 
 export function Overview({ goto }: { goto: (t: Tab) => void }) {
-  const { state } = useCatalog();
+  const { state, setFocusDataset } = useCatalog();
 
   const m = useMemo(() => {
     const datasets = state?.datasets ?? [];
@@ -31,7 +32,27 @@ export function Overview({ goto }: { goto: (t: Tab) => void }) {
 
   const hasData = m.datasets > 0;
 
-  const semPalette = ["#3b74f5", "#ec4899", "#10b981", "#f59e0b", "#8b5cf6", "#06b6d4", "#f97316", "#14b8a6"];
+  const healthByDs = useMemo(() => {
+    const datasets = state?.datasets ?? [];
+    const docs = state?.docs ?? {};
+    return datasets.map((d) => ({ ds: d, health: computeDatasetHealth(d, docs[d.id]) }));
+  }, [state]);
+
+  const avgHealth = healthByDs.length
+    ? Math.round(healthByDs.reduce((s, h) => s + h.health.score, 0) / healthByDs.length) : 0;
+  const worstHealth = [...healthByDs].sort((a, b) => a.health.score - b.health.score).slice(0, 4);
+
+  const trending = useMemo(() => {
+    const datasets = state?.datasets ?? [];
+    const docs = state?.docs ?? {};
+    return [...datasets]
+      .map((d) => ({ ds: d, views: docs[d.id]?.view_count ?? 0 }))
+      .filter((t) => t.views > 0)
+      .sort((a, b) => b.views - a.views)
+      .slice(0, 5);
+  }, [state]);
+
+  const semPalette = ["#009f3d", "#ec4899", "#10b981", "#f59e0b", "#8b5cf6", "#06b6d4", "#f97316", "#14b8a6"];
   const semSegments = Object.entries(m.semCount)
     .sort((a, b) => b[1] - a[1]).slice(0, 8)
     .map(([k, v], i) => ({ value: v, color: semPalette[i % semPalette.length], label: k }));
@@ -40,7 +61,7 @@ export function Overview({ goto }: { goto: (t: Tab) => void }) {
     <div className="space-y-5">
       {/* Hero */}
       <div className="card relative overflow-hidden p-6">
-        <div className="absolute -right-12 -top-12 h-48 w-48 rounded-full bg-gradient-to-br from-loom-500/20 to-violet-500/10 blur-2xl" />
+        <div className="absolute -right-12 -top-12 h-48 w-48 rounded-full bg-gradient-to-br from-loom-500/20 to-loom-700/10 blur-2xl" />
         <div className="relative flex flex-wrap items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-loom-500">
@@ -70,7 +91,7 @@ export function Overview({ goto }: { goto: (t: Tab) => void }) {
             <Stat label="Tables" value={m.datasets} icon={<Table2 size={22} />} />
             <Stat label="Columns" value={m.cols} icon={<Columns3 size={22} />} />
             <Stat label="PK/FK Relationships" value={state?.relationships.length ?? 0}
-              sub={`${state?.matches.length ?? 0} identical fields`} icon={<GitCompare size={22} />} accent="text-violet-500" />
+              sub={`${state?.matches.length ?? 0} identical fields`} icon={<GitCompare size={22} />} />
             <Stat label="PII Fields" value={m.pii} sub="sensitivity detected"
               icon={<Lock size={22} />} accent="text-rose-500" />
           </div>
@@ -82,7 +103,7 @@ export function Overview({ goto }: { goto: (t: Tab) => void }) {
               <div className="flex items-center gap-5">
                 <Donut
                   segments={[
-                    { value: m.documented, color: "#3b74f5" },
+                    { value: m.documented, color: "#009f3d" },
                     { value: m.cols - m.documented, color: "transparent" },
                   ]}
                   center={<div className="text-center"><div className="text-2xl font-bold">{m.coverage}%</div>
@@ -141,6 +162,54 @@ export function Overview({ goto }: { goto: (t: Tab) => void }) {
                   <button onClick={() => goto("agents")} className="btn-ghost mt-1 w-full justify-center text-xs">
                     View details →
                   </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            {/* catalog health */}
+            <div className="card p-5">
+              <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
+                <HeartPulse size={16} className="text-rose-500" /> Catalog health
+              </div>
+              <div className="flex items-center gap-5">
+                <HealthRing score={avgHealth} size={64} thickness={7} />
+                <div className="space-y-1 text-sm">
+                  <div className="text-slate-500">Average score across {healthByDs.length} table(s)</div>
+                  {worstHealth.length > 0 && (
+                    <div className="mt-1 space-y-1">
+                      {worstHealth.map(({ ds, health }) => (
+                        <button key={ds.id} onClick={() => { setFocusDataset({ dsId: ds.id }); goto("catalog"); }}
+                          className="flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left hover:bg-slate-100 dark:hover:bg-slate-800">
+                          <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: healthColor(health.score) }} />
+                          <span className="min-w-0 flex-1 truncate font-mono text-xs">{shortDs(ds.id)}</span>
+                          <span className="font-mono text-xs font-semibold" style={{ color: healthColor(health.score) }}>{health.score}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* trending tables */}
+            <div className="card p-5">
+              <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
+                <Flame size={16} className="text-amber-500" /> Trending tables
+              </div>
+              {trending.length === 0 ? (
+                <div className="py-6 text-center text-sm text-slate-400">No views recorded yet — open a table to start tracking.</div>
+              ) : (
+                <div className="space-y-1.5">
+                  {trending.map(({ ds, views }, i) => (
+                    <button key={ds.id} onClick={() => { setFocusDataset({ dsId: ds.id }); goto("catalog"); }}
+                      className="flex w-full items-center gap-2.5 rounded-lg px-1.5 py-1.5 text-left hover:bg-slate-100 dark:hover:bg-slate-800">
+                      <span className="w-4 shrink-0 text-center text-xs font-bold text-slate-400">{i + 1}</span>
+                      <span className="min-w-0 flex-1 truncate font-mono text-sm">{shortDs(ds.id)}</span>
+                      <span className="flex shrink-0 items-center gap-1 text-xs text-slate-400"><Eye size={12} /> {views}</span>
+                    </button>
+                  ))}
                 </div>
               )}
             </div>

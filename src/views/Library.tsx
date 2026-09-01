@@ -3,7 +3,7 @@ import {
   Library as LibraryIcon, Search, BookOpen, MessageSquareText, Send, Loader2,
   Lock, ArrowLeft, Sparkles, Hash, Type, Calendar, Mail, Link2, ToggleLeft,
   Banknote, MapPin, Phone, Fingerprint, Tag, FileText, Package,
-  ChevronRight, Layers,
+  ChevronRight, Layers, AlertTriangle,
 } from "lucide-react";
 import { useCatalog, useScopedDatasets } from "../store";
 import { api } from "../api";
@@ -33,7 +33,7 @@ export function Library({ goto }: { goto: (t: Tab) => void }) {
     <div className="space-y-4">
       {/* header */}
       <div className="card relative overflow-hidden p-5">
-        <div className="absolute -right-10 -top-10 h-40 w-40 rounded-full bg-gradient-to-br from-loom-500/20 to-violet-500/10 blur-2xl" />
+        <div className="absolute -right-10 -top-10 h-40 w-40 rounded-full bg-gradient-to-br from-loom-500/20 to-loom-700/10 blur-2xl" />
         <div className="relative flex flex-wrap items-center justify-between gap-3">
           <div>
             <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-loom-500">
@@ -154,9 +154,10 @@ function Shelves({ datasets, q, setQ, onOpen, onAsk }: {
                       <BookOpen size={17} />
                     </div>
                     <div className="min-w-0 flex-1">
-                      <div className="truncate font-semibold">{humanize(d.name)}</div>
+                      <div className={`truncate font-semibold ${doc?.deprecated ? "line-through opacity-60" : ""}`}>{humanize(d.name)}</div>
                       <div className="text-[11px] text-slate-400">{d.columns.length} fields · ~{d.row_estimate.toLocaleString()} rows</div>
                     </div>
+                    {doc?.deprecated && <AlertTriangle size={13} className="shrink-0 text-rose-500" />}
                     {pii > 0 && <Lock size={13} className="shrink-0 text-rose-400" />}
                     <ChevronRight size={15} className="shrink-0 text-slate-300 transition-transform group-hover:translate-x-0.5 dark:text-slate-600" />
                   </div>
@@ -337,7 +338,7 @@ function Librarian({ llmUp, onOpenTable }: { llmUp: boolean; onOpenTable: (dsId:
   return (
     <div className="card flex h-[calc(100vh-17rem)] flex-col overflow-hidden">
       <div className="flex items-center gap-2 border-b border-slate-200 p-3 dark:border-slate-800">
-        <div className="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-loom-500 to-violet-600 text-white">
+        <div className="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-loom-400 to-loom-700 text-white">
           <MessageSquareText size={16} />
         </div>
         <div>

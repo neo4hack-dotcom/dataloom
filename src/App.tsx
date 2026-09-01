@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Database, Table2, GitCompare, Workflow, Bot, Tags,
   Search, Settings as SettingsIcon, Command, Moon, Sun, Sparkles, Cpu,
   CircleDot, Link2, Compass, Library as LibraryIcon, ListChecks, Activity,
-  Plug, Users as UsersIcon, LogOut,
+  Plug, Users as UsersIcon, LogOut, Globe2, Route,
 } from "lucide-react";
 import { CatalogProvider, useCatalog } from "./store";
 import { AuthProvider, useAuth } from "./auth";
@@ -26,10 +26,14 @@ import { SettingsView } from "./views/SettingsView";
 import { QueryLog } from "./views/QueryLog";
 import { McpSettings } from "./views/admin/McpSettings";
 import { Users } from "./views/admin/Users";
+import { Domains } from "./views/Domains";
+import { TagsView } from "./views/TagsView";
+import { ImpactAnalysis } from "./views/ImpactAnalysis";
 
 export type Tab =
   | "overview" | "library" | "connections" | "sources" | "catalog" | "explorer" | "relationships"
-  | "lineage" | "agents" | "glossary" | "search" | "settings" | "queries" | "mcp" | "users";
+  | "lineage" | "impact" | "domains" | "tags" | "agents" | "glossary" | "search" | "settings"
+  | "queries" | "mcp" | "users";
 
 const TABS: { id: Tab; label: string; icon: typeof Database; group?: string; adminOnly?: boolean }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
@@ -40,8 +44,11 @@ const TABS: { id: Tab; label: string; icon: typeof Database; group?: string; adm
   { id: "explorer", label: "Explorer", icon: Compass },
   { id: "relationships", label: "Relationships", icon: GitCompare },
   { id: "lineage", label: "Lineage", icon: Workflow },
-  { id: "agents", label: "Agents", icon: Bot },
+  { id: "impact", label: "Impact Analysis", icon: Route },
+  { id: "domains", label: "Domains", icon: Globe2, group: "Governance" },
+  { id: "tags", label: "Tags", icon: Tags },
   { id: "glossary", label: "Glossary", icon: Tags },
+  { id: "agents", label: "Agents", icon: Bot, group: "Run" },
   { id: "search", label: "Search", icon: Search },
   { id: "queries", label: "Query Log", icon: Activity, group: "Monitor" },
   { id: "mcp", label: "MCP", icon: Plug, group: "Admin", adminOnly: true },
@@ -88,7 +95,7 @@ function Shell() {
       {/* Sidebar */}
       <aside className="flex w-60 shrink-0 flex-col border-r border-slate-200 bg-white/70 backdrop-blur dark:border-slate-800 dark:bg-slate-950/60">
         <div className="flex items-center gap-2.5 px-4 py-4">
-          <div className="grid h-9 w-9 place-items-center rounded-lg bg-gradient-to-br from-loom-500 to-violet-600 text-white shadow-lg shadow-loom-600/30">
+          <div className="grid h-9 w-9 place-items-center rounded-lg bg-gradient-to-br from-loom-400 to-loom-700 text-white shadow-lg shadow-loom-600/30">
             <Workflow size={20} />
           </div>
           <div>
@@ -206,13 +213,16 @@ function Shell() {
               {tab === "library" && <Library goto={setTab} />}
               {tab === "connections" && <Connections goto={setTab} />}
               {tab === "sources" && <Sources goto={setTab} />}
-              {tab === "catalog" && <Catalog />}
+              {tab === "catalog" && <Catalog goto={setTab} />}
               {tab === "explorer" && <Explorer />}
               {tab === "relationships" && <Relationships />}
               {tab === "lineage" && <Lineage />}
+              {tab === "impact" && <ImpactAnalysis />}
+              {tab === "domains" && <Domains goto={setTab} />}
+              {tab === "tags" && <TagsView goto={setTab} />}
               {tab === "agents" && <Agents />}
               {tab === "glossary" && <Glossary />}
-              {tab === "search" && <SearchView />}
+              {tab === "search" && <SearchView goto={setTab} />}
               {tab === "queries" && <QueryLog />}
               {tab === "mcp" && user?.role === "admin" && <McpSettings />}
               {tab === "users" && user?.role === "admin" && <Users />}

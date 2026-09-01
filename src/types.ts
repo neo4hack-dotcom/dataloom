@@ -62,6 +62,38 @@ export interface ColumnDoc {
   // last AI suggestion generated for this column — persisted so re-opening the
   // panel doesn't call the LLM again; only "Regenerate" forces a fresh call.
   llm_suggestion?: CachedColumnSuggestion;
+  tags?: string[];
+}
+
+export interface Owner {
+  id: string;
+  name: string;
+  type: "technical" | "business" | "steward";
+  is_user: boolean;
+}
+
+export interface Deprecation {
+  reason: string;
+  by: string;
+  at: number;
+  replacement_dataset_id?: string | null;
+}
+
+export interface Domain {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  description: string;
+  color: string;
+}
+
+export interface ColumnLineageEdge {
+  from: { dataset_id: string; column: string };
+  to: { dataset_id: string; column: string };
+  via: string;
+  kind: string;
+  confidence: number;
+  manual?: boolean;
 }
 
 export interface TablePartition {
@@ -92,6 +124,14 @@ export interface DatasetDoc {
     roles: Record<string, string | null>; confidence: number; reason: string;
     columns: string[]; sample: Record<string, unknown>[]; cached_at: number;
   };
+  tags?: string[];
+  domain_id?: string | null;
+  owners?: Owner[];
+  deprecated?: Deprecation | null;
+  view_count?: number;
+  last_viewed_at?: number;
+  custom_properties?: Record<string, string>;
+  profile_history?: { row_estimate: number; ts: number }[];
 }
 
 export interface DiscoveredTable {
@@ -216,6 +256,20 @@ export interface CatalogState {
   runs: AgentRun[];
   audit: { version: number; ts: number; action: string; detail: string }[];
   settings: { theme: string; llm: LlmConfig; connectors: ConnectorSettings; mcp: McpConfig };
+  domains: Domain[];
+  column_lineage: ColumnLineageEdge[];
+}
+
+export interface SearchHit {
+  type: "dataset" | "column" | "glossary" | "tag" | "domain";
+  label: string;
+  sub: string;
+  score: number;
+  dataset_id?: string;
+  column?: string;
+  term?: string;
+  tag?: string;
+  domain_id?: string;
 }
 
 export interface User {

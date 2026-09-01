@@ -3,9 +3,10 @@ import { Workflow, Plus, StickyNote, Info, Trash2, Check, ArrowRight, X, KeyRoun
 import { useCatalog, useScopedDatasets } from "../store";
 import { api } from "../api";
 import { EmptyState, shortDs, semanticColor } from "../lib/ui";
+import { buildLayout } from "../lib/graphLayout";
 
 const EDGE_COLOR: Record<string, string> = {
-  key: "#3b74f5", mapping: "#8b5cf6", manual: "#10b981",
+  key: "#009f3d", mapping: "#ff6600", manual: "#10b981",
 };
 
 export function Lineage() {
@@ -91,7 +92,7 @@ export function Lineage() {
                   <rect width={n.w} height={n.h} rx={8}
                     className={selected === id
                       ? "fill-loom-500/15 stroke-loom-500"
-                      : isMap ? "fill-violet-500/10 stroke-violet-500/40" : "fill-white stroke-slate-300 dark:fill-slate-800 dark:stroke-slate-600"}
+                      : isMap ? "fill-flame-500/10 stroke-flame-500/40" : "fill-white stroke-slate-300 dark:fill-slate-800 dark:stroke-slate-600"}
                     strokeWidth={selected === id ? 2.5 : 1.5} />
                   <text x={10} y={20} className="fill-slate-700 text-[12px] font-semibold dark:fill-slate-100">{nameOf(id)}</text>
                   <text x={10} y={35} className="fill-slate-400 text-[9px]">{shortDs(id).split(".")[0]}</text>
@@ -270,46 +271,4 @@ function AddEdgePanel({ datasets }: { datasets: { id: string; schema: string; na
       </div>
     </div>
   );
-}
-
-function buildLayout(ids: string[], edges: { from: string; to: string }[]) {
-  const NODE_W = 150, NODE_H = 44, GAP_X = 200, GAP_Y = 16, PAD = 20;
-  const adj = new Map<string, string[]>();
-  const indeg = new Map<string, number>();
-  ids.forEach((id) => { adj.set(id, []); indeg.set(id, 0); });
-  for (const e of edges) {
-    if (!adj.has(e.from) || !adj.has(e.to)) continue;
-    adj.get(e.from)!.push(e.to);
-    indeg.set(e.to, (indeg.get(e.to) ?? 0) + 1);
-  }
-  const level = new Map<string, number>();
-  const queue = ids.filter((id) => (indeg.get(id) ?? 0) === 0);
-  queue.forEach((id) => level.set(id, 0));
-  const work = [...queue];
-  const localIndeg = new Map(indeg);
-  while (work.length) {
-    const id = work.shift()!;
-    for (const nb of adj.get(id) ?? []) {
-      level.set(nb, Math.max(level.get(nb) ?? 0, (level.get(id) ?? 0) + 1));
-      localIndeg.set(nb, (localIndeg.get(nb) ?? 1) - 1);
-      if ((localIndeg.get(nb) ?? 0) <= 0) work.push(nb);
-    }
-  }
-  ids.forEach((id) => { if (!level.has(id)) level.set(id, 0); });
-  const byLevel = new Map<number, string[]>();
-  ids.forEach((id) => {
-    const l = level.get(id)!;
-    (byLevel.get(l) ?? byLevel.set(l, []).get(l)!).push(id);
-  });
-  const nodes: Record<string, { x: number; y: number; w: number; h: number }> = {};
-  let maxY = 0;
-  for (const [l, group] of [...byLevel.entries()].sort((a, b) => a[0] - b[0])) {
-    group.forEach((id, i) => {
-      const x = PAD + l * GAP_X;
-      const y = PAD + i * (NODE_H + GAP_Y);
-      nodes[id] = { x, y, w: NODE_W, h: NODE_H };
-      maxY = Math.max(maxY, y + NODE_H);
-    });
-  }
-  return { nodes, height: maxY + PAD };
 }

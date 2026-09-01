@@ -49,6 +49,7 @@ class ProfilerAgent:
             log("info", f"Scope: {len(tables)} selected table(s) (of the source's inventory). Profiling…")
         else:
             log("info", f"{len(tables)} tables detected. Profiling…")
+        old_by_id = {d["id"]: d for d in store.datasets()}
         datasets = []
         for t in tables:
             if run_id and store.is_run_cancel_requested(run_id):
@@ -82,6 +83,10 @@ class ProfilerAgent:
                 "columns": col_profiles,
             })
             log("ok", f"  ✓ {t['schema']}.{t['name']} — {len(cols)} columns profiled.")
+            old = old_by_id.get(ds_id)
+            if old is not None:
+                # capture the pre-overwrite row estimate so a health check can spot volume drift
+                store.record_profile_snapshot(ds_id, old["row_estimate"], time.time())
         store.upsert_datasets(datasets)
         return {"datasets": len(datasets),
                 "columns": sum(len(d["columns"]) for d in datasets)}

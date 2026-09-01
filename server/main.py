@@ -568,6 +568,198 @@ def edit_col(ds_id: str, col: str, body: ColDocIn,
     return {"ok": True, "version": store.version}
 
 
+# -- tags ---------------------------------------------------------------------- #
+class TagIn(BaseModel):
+    tag: str
+
+
+@app.post("/api/datasets/{ds_id:path}/tags")
+def add_dataset_tag(ds_id: str, body: TagIn, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    store.add_dataset_tag(ds_id, body.tag.strip())
+    return {"ok": True, "version": store.version}
+
+
+@app.delete("/api/datasets/{ds_id:path}/tags/{tag}")
+def remove_dataset_tag(ds_id: str, tag: str, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    store.remove_dataset_tag(ds_id, tag)
+    return {"ok": True, "version": store.version}
+
+
+@app.post("/api/columns/{ds_id:path}/{col}/tags")
+def add_column_tag(ds_id: str, col: str, body: TagIn, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    store.add_column_tag(ds_id, col, body.tag.strip())
+    return {"ok": True, "version": store.version}
+
+
+@app.delete("/api/columns/{ds_id:path}/{col}/tags/{tag}")
+def remove_column_tag(ds_id: str, col: str, tag: str, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    store.remove_column_tag(ds_id, col, tag)
+    return {"ok": True, "version": store.version}
+
+
+# -- domains (hierarchical) ----------------------------------------------------- #
+class DomainIn(BaseModel):
+    name: str
+    parent_id: str | None = None
+    description: str = ""
+    color: str = "#3b74f5"
+
+
+@app.post("/api/domains")
+def add_domain(body: DomainIn, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    d = store.add_domain(body.name.strip(), body.parent_id, body.description, body.color)
+    return {"domain": d, "version": store.version}
+
+
+class DomainPatchIn(BaseModel):
+    name: str | None = None
+    parent_id: str | None = None
+    description: str | None = None
+    color: str | None = None
+
+
+@app.patch("/api/domains/{domain_id}")
+def update_domain(domain_id: str, body: DomainPatchIn, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    try:
+        d = store.update_domain(domain_id, body.model_dump(exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return {"domain": d, "version": store.version}
+
+
+@app.delete("/api/domains/{domain_id}")
+def delete_domain(domain_id: str, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    try:
+        store.delete_domain(domain_id)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True, "version": store.version}
+
+
+class DatasetDomainIn(BaseModel):
+    domain_id: str | None = None
+
+
+@app.post("/api/datasets/{ds_id:path}/domain")
+def set_dataset_domain(ds_id: str, body: DatasetDomainIn, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    store.set_dataset_domain(ds_id, body.domain_id)
+    return {"ok": True, "version": store.version}
+
+
+# -- ownership ------------------------------------------------------------------ #
+class OwnerIn(BaseModel):
+    name: str
+    type: str = "technical"   # technical | business | steward
+    user_id: str | None = None
+
+
+@app.post("/api/datasets/{ds_id:path}/owners")
+def add_dataset_owner(ds_id: str, body: OwnerIn, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    owner = store.add_dataset_owner(ds_id, {
+        "id": body.user_id, "name": body.name.strip(), "type": body.type,
+        "is_user": body.user_id is not None,
+    })
+    return {"owner": owner, "version": store.version}
+
+
+@app.delete("/api/datasets/{ds_id:path}/owners/{owner_id}")
+def remove_dataset_owner(ds_id: str, owner_id: str, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    store.remove_dataset_owner(ds_id, owner_id)
+    return {"ok": True, "version": store.version}
+
+
+# -- deprecation ------------------------------------------------------------------ #
+class DeprecateIn(BaseModel):
+    reason: str
+    replacement_dataset_id: str | None = None
+
+
+@app.post("/api/datasets/{ds_id:path}/deprecate")
+def deprecate_dataset(ds_id: str, body: DeprecateIn, request: Request,
+                      x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    user = getattr(request.state, "user", None)
+    store.set_deprecation(ds_id, {
+        "reason": body.reason.strip(), "by": (user or {}).get("username", "unknown"),
+        "at": time.time(), "replacement_dataset_id": body.replacement_dataset_id,
+    })
+    return {"ok": True, "version": store.version}
+
+
+@app.post("/api/datasets/{ds_id:path}/undeprecate")
+def undeprecate_dataset(ds_id: str, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    store.set_deprecation(ds_id, None)
+    return {"ok": True, "version": store.version}
+
+
+# -- usage / popularity --------------------------------------------------------- #
+@app.post("/api/datasets/{ds_id:path}/view")
+def record_dataset_view(ds_id: str):
+    """Fire-and-forget usage tracking — not version-bumping, no guard (matches set_table_row_count)."""
+    store.record_dataset_view(ds_id)
+    return {"ok": True}
+
+
+# -- custom / structured properties --------------------------------------------- #
+class PropertyIn(BaseModel):
+    key: str
+    value: str
+
+
+@app.post("/api/datasets/{ds_id:path}/properties")
+def set_custom_property(ds_id: str, body: PropertyIn, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    store.set_custom_property(ds_id, body.key.strip(), body.value)
+    return {"ok": True, "version": store.version}
+
+
+@app.delete("/api/datasets/{ds_id:path}/properties/{key}")
+def delete_custom_property(ds_id: str, key: str, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    store.delete_custom_property(ds_id, key)
+    return {"ok": True, "version": store.version}
+
+
+# -- column-level lineage / impact analysis --------------------------------------- #
+class ColumnLineageIn(BaseModel):
+    from_dataset_id: str
+    from_column: str
+    to_dataset_id: str
+    to_column: str
+    via: str = ""
+    kind: str = "derived"
+    confidence: float = 100.0
+
+
+@app.post("/api/lineage/columns")
+def add_column_lineage(body: ColumnLineageIn, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    edge = store.add_column_lineage_edge({
+        "from": {"dataset_id": body.from_dataset_id, "column": body.from_column},
+        "to": {"dataset_id": body.to_dataset_id, "column": body.to_column},
+        "via": body.via, "kind": body.kind, "confidence": body.confidence,
+    })
+    return {"edge": edge, "version": store.version}
+
+
+@app.delete("/api/lineage/columns/{idx}")
+def delete_column_lineage(idx: int, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    store.delete_column_lineage_edge(idx)
+    return {"ok": True, "version": store.version}
+
+
 # -- relationships ----------------------------------------------------------- #
 class RelStatusIn(BaseModel):
     status: str
@@ -714,33 +906,33 @@ class SearchIn(BaseModel):
 
 @app.post("/api/search")
 def search(body: SearchIn):
+    """Universal search — datasets, columns, glossary terms, tags and domains, faceted."""
     q = body.q.strip()
     snap = store.snapshot()
-    hits = _lexical_search(q, snap)
+    result = search_engine.universal_search(q, snap)
+    hits = result["hits"]
     answer = None
     if llm.is_up() and hits:
-        ctx = _format_context(hits[:12], snap)
+        ctx = _format_context(hits[:12])
         try:
             out = llm.generate(
                 system=("You are a data catalog assistant. Answer in English, "
                         "relying ONLY on the context provided. Strict JSON."),
-                prompt=(f"Question: {q}\n\nContext (catalog columns):\n{ctx}\n\n"
+                prompt=(f"Question: {q}\n\nContext (catalog search hits):\n{ctx}\n\n"
                         "Return {\"answer\": string, \"best_dataset\": string|null}"),
             )
             if isinstance(out, dict):
                 answer = out.get("answer")
         except Exception:
             answer = None
-    return {"query": q, "hits": hits[:25], "answer": answer, "llm": llm.is_up()}
+    return {"query": q, "hits": hits, "facets": result["facets"], "answer": answer, "llm": llm.is_up()}
 
 
-_lexical_search = search_engine.lexical_search
+_lexical_search = search_engine.lexical_search  # column-only — used by the MCP search_catalog tool
 
 
-def _format_context(hits: list[dict], snap: dict) -> str:
-    return "\n".join(
-        f"- {h['dataset']}.{h['column']} ({h['semantic_type']}, q={h['quality']}): "
-        f"{h['definition'] or '—'}" for h in hits)
+def _format_context(hits: list[dict]) -> str:
+    return "\n".join(f"- [{h['type']}] {h['label']}: {h.get('sub') or '—'}" for h in hits)
 
 
 # -- settings ---------------------------------------------------------------- #
