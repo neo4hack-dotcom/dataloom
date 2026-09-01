@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Database, Table2, GitCompare, Workflow, Bot, Tags,
   Search, Settings as SettingsIcon, Command, Moon, Sun, Sparkles, Cpu,
   CircleDot, Link2, Compass, Library as LibraryIcon, ListChecks, Activity,
-  Plug, Users as UsersIcon, LogOut, Globe2, Route,
+  Plug, Users as UsersIcon, LogOut, Globe2, Route, LifeBuoy,
 } from "lucide-react";
 import { CatalogProvider, useCatalog } from "./store";
 import { AuthProvider, useAuth } from "./auth";
@@ -29,11 +29,12 @@ import { Users } from "./views/admin/Users";
 import { Domains } from "./views/Domains";
 import { TagsView } from "./views/TagsView";
 import { ImpactAnalysis } from "./views/ImpactAnalysis";
+import { Guide } from "./views/Guide";
 
 export type Tab =
   | "overview" | "library" | "connections" | "sources" | "catalog" | "explorer" | "relationships"
   | "lineage" | "impact" | "domains" | "tags" | "agents" | "glossary" | "search" | "settings"
-  | "queries" | "mcp" | "users";
+  | "queries" | "mcp" | "users" | "guide";
 
 const TABS: { id: Tab; label: string; icon: typeof Database; group?: string; adminOnly?: boolean }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
@@ -54,6 +55,7 @@ const TABS: { id: Tab; label: string; icon: typeof Database; group?: string; adm
   { id: "mcp", label: "MCP", icon: Plug, group: "Admin", adminOnly: true },
   { id: "users", label: "Users", icon: UsersIcon, adminOnly: true },
   { id: "settings", label: "Settings", icon: SettingsIcon },
+  { id: "guide", label: "User Guide", icon: LifeBuoy, group: "Help" },
 ];
 
 function Shell() {
@@ -227,6 +229,7 @@ function Shell() {
               {tab === "mcp" && user?.role === "admin" && <McpSettings />}
               {tab === "users" && user?.role === "admin" && <Users />}
               {tab === "settings" && <SettingsView />}
+              {tab === "guide" && <Guide />}
             </div>
           )}
         </div>

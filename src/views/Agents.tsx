@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ScanLine, GitCompare, BookOpen, Workflow, ShieldCheck, Tags, Bot,
   Zap, Loader2, CheckCircle2, XCircle, Terminal, ShieldAlert, X, OctagonX, MinusCircle,
+  Sparkles, Wrench,
 } from "lucide-react";
 import { useCatalog } from "../store";
 import { api } from "../api";
@@ -31,11 +32,16 @@ export function Agents() {
   const firstConn = state?.connections[0];
   const running = activeRun && (activeRun.status === "running" || activeRun.status === "queued");
 
+  // has this agent (or the full pipeline) already completed on this connection? —
+  // re-running it may overwrite existing profiling/documentation, so the button
+  // turns red to warn of that before the (still-required) confirm dialog fires.
+  const isAlreadyDone = (agentIds: string[] | null) => !!(firstConn && state?.runs.some((r) =>
+    r.connection_id === firstConn.id && r.status === "done" &&
+    (agentIds ? agentIds.every((id) => r.agents.includes(id)) : true)));
+
   const launch = async (agentIds: string[] | null) => {
     if (!firstConn) { toast("err", "Add a connection first."); return; }
-    const alreadyDone = state?.runs.some((r) =>
-      r.connection_id === firstConn.id && r.status === "done" &&
-      (agentIds ? agentIds.every((id) => r.agents.includes(id)) : true));
+    const alreadyDone = isAlreadyDone(agentIds);
     if (alreadyDone) {
       const ok = await confirm({
         title: "Already run",
@@ -81,7 +87,8 @@ export function Agents() {
             <div className="flex items-center gap-2 text-sm font-semibold">
               <Bot size={18} className="text-loom-500" /> Built-in agents
             </div>
-            <button onClick={() => launch(null)} disabled={!!running} className="btn-primary">
+            <button onClick={() => launch(null)} disabled={!!running}
+              className={isAlreadyDone(null) ? "btn-danger" : "btn-ai"}>
               {running ? <Loader2 size={15} className="animate-spin" /> : <Zap size={15} />}
               Magic Enrich
             </button>
@@ -121,7 +128,7 @@ export function Agents() {
                     )}
                   </div>
                   <button onClick={() => launch([a.id])} disabled={!!running}
-                    className="btn-ghost shrink-0 text-xs">Run</button>
+                    className={`shrink-0 text-xs ${isAlreadyDone([a.id]) ? "btn-danger" : "btn-ai-outline"}`}>Run</button>
                 </div>
               );
             })}
@@ -139,17 +146,9 @@ export function Agents() {
                 <span className="chip bg-slate-500/10 text-slate-500">{qaCounts.low} low</span>
               </span>
             </div>
-            <div className="max-h-64 space-y-1 overflow-auto">
+            <div className="max-h-96 space-y-1 overflow-auto">
               {qa.map((issue, k) => (
-                <div key={k} className="flex items-center gap-2 rounded-lg px-2 py-1 text-xs hover:bg-slate-50 dark:hover:bg-slate-800/60">
-                  <span className={`h-2 w-2 shrink-0 rounded-full ${
-                    issue.severity === "high" ? "bg-rose-500" : issue.severity === "medium" ? "bg-amber-500" : "bg-slate-400"}`} />
-                  <span className="flex-1 text-slate-500">{issue.message}</span>
-                  <button onClick={() => dismissQA(k)}
-                    className="text-slate-400 hover:text-rose-500 shrink-0" title="Dismiss">
-                    <X size={13} />
-                  </button>
-                </div>
+                <QaIssueRow key={k} issue={issue} llmUp={health?.llm.up ?? false} onDismiss={() => dismissQA(k)} />
               ))}
             </div>
           </div>
@@ -234,6 +233,58 @@ export function Agents() {
         </div>
       </div>
       {dialog}
+    </div>
+  );
+}
+
+// ---- one QA issue row, with an on-demand LLM explanation + suggested fix --- //
+function QaIssueRow({ issue, llmUp, onDismiss }: {
+  issue: { severity: string; dataset_id: string; message: string }; llmUp: boolean; onDismiss: () => void;
+}) {
+  const { toast } = useCatalog();
+  const [loading, setLoading] = useState(false);
+  const [expl, setExpl] = useState<{ explanation: string; suggested_fix: string; risk: string } | null>(null);
+
+  const explain = async () => {
+    setLoading(true);
+    try {
+      const r = await api.explainQaIssue({ dataset_id: issue.dataset_id, message: issue.message, severity: issue.severity });
+      setExpl(r.explanation);
+    } catch (e) {
+      toast("err", (e as Error).message.includes("503") ? "Local LLM unavailable" : "Explanation failed");
+    } finally { setLoading(false); }
+  };
+
+  return (
+    <div className="rounded-lg px-2 py-1 text-xs hover:bg-slate-50 dark:hover:bg-slate-800/60">
+      <div className="flex items-center gap-2">
+        <span className={`h-2 w-2 shrink-0 rounded-full ${
+          issue.severity === "high" ? "bg-rose-500" : issue.severity === "medium" ? "bg-amber-500" : "bg-slate-400"}`} />
+        <span className="flex-1 text-slate-500">{issue.message}</span>
+        {!expl && (
+          <button onClick={explain} disabled={!llmUp || loading}
+            className="shrink-0 text-loom-500 hover:text-loom-600 disabled:opacity-40" title="Explain & suggest a fix (AI)">
+            {loading ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+          </button>
+        )}
+        <button onClick={onDismiss} className="text-slate-400 hover:text-rose-500 shrink-0" title="Dismiss">
+          <X size={13} />
+        </button>
+      </div>
+      {expl && (
+        <div className="ml-4 mt-1 flex items-start gap-1.5 rounded-lg border border-loom-500/30 bg-loom-500/5 p-2 animate-fade-in">
+          <Sparkles size={13} className="mt-0.5 shrink-0 text-loom-500" />
+          <div className="flex-1 space-y-1">
+            <p className="text-slate-700 dark:text-slate-200">{expl.explanation}</p>
+            <p className="flex items-start gap-1 text-slate-500">
+              <Wrench size={11} className="mt-0.5 shrink-0" /> {expl.suggested_fix}
+            </p>
+          </div>
+          <button onClick={() => setExpl(null)} className="shrink-0 text-slate-400 hover:text-slate-600" title="Close">
+            <X size={12} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -3,6 +3,7 @@ import {
   Cpu, Download, FileJson, FileText, History, Check, Server,
   Table2, AppWindow, Package, RotateCcw, AlertTriangle, Upload, Link2,
   RefreshCw, Zap, Loader2, Gauge, Save, DatabaseBackup, FileUp, ShieldCheck,
+  HeartPulse,
 } from "lucide-react";
 import { useCatalog } from "../store";
 import { useAuth } from "../auth";
@@ -31,6 +32,25 @@ export function SettingsView() {
       await mutate((v) => api.updateConnectorSettings({ row_fetch_limit: rowLimit }, v));
       toast("ok", "Row fetch limit saved");
     } finally { setRowLimitBusy(false); }
+  };
+
+  // -- data-quality alert thresholds (admin only) --
+  const [alertCfg, setAlertCfg] = useState({
+    quality_score_warn: 60, quality_score_critical: 35, null_ratio_warn: 50,
+    row_drift_warn_pct: 20, require_pii_validation: true, stale_days_warn: 30,
+  });
+  const [alertBusy, setAlertBusy] = useState(false);
+  useEffect(() => {
+    const a = state?.settings.alerts;
+    if (a) setAlertCfg({ ...a, null_ratio_warn: Math.round(a.null_ratio_warn * 100) });
+  }, [state?.settings.alerts]);
+
+  const saveAlerts = async () => {
+    setAlertBusy(true);
+    try {
+      await mutate((v) => api.updateAlertSettings({ ...alertCfg, null_ratio_warn: alertCfg.null_ratio_warn / 100 }, v));
+      toast("ok", "Alert thresholds saved");
+    } finally { setAlertBusy(false); }
   };
 
   // -- LLM configuration (OpenAI-compatible) --
@@ -258,6 +278,55 @@ export function SettingsView() {
               {rowLimitBusy ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} Save
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Data quality alert thresholds — admin only */}
+      {user?.role === "admin" && (
+        <div className="card p-5">
+          <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
+            <HeartPulse size={16} className="text-loom-500" /> Data quality alerts
+            <span className="text-xs font-normal text-slate-400">— admin only</span>
+          </div>
+          <p className="mb-3 text-xs text-slate-400">
+            Drives both the QA Reviewer agent's audit and every dataset's health score, so the two
+            never disagree. Lower the thresholds to catch more issues, raise them to reduce noise.
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-slate-500">Column quality score — warn below</span>
+              <input type="number" min={0} max={100} className="input" value={alertCfg.quality_score_warn}
+                onChange={(e) => setAlertCfg((c) => ({ ...c, quality_score_warn: Math.max(0, Math.min(100, Number(e.target.value) || 0)) }))} />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-slate-500">Column quality score — critical below</span>
+              <input type="number" min={0} max={100} className="input" value={alertCfg.quality_score_critical}
+                onChange={(e) => setAlertCfg((c) => ({ ...c, quality_score_critical: Math.max(0, Math.min(100, Number(e.target.value) || 0)) }))} />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-slate-500">Null ratio — warn above (%)</span>
+              <input type="number" min={0} max={100} className="input" value={alertCfg.null_ratio_warn}
+                onChange={(e) => setAlertCfg((c) => ({ ...c, null_ratio_warn: Math.max(0, Math.min(100, Number(e.target.value) || 0)) }))} />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-slate-500">Row-count drift — warn above (%)</span>
+              <input type="number" min={0} max={100} className="input" value={alertCfg.row_drift_warn_pct}
+                onChange={(e) => setAlertCfg((c) => ({ ...c, row_drift_warn_pct: Math.max(0, Math.min(100, Number(e.target.value) || 0)) }))} />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-slate-500">Stale profiling — warn after (days)</span>
+              <input type="number" min={0} className="input" value={alertCfg.stale_days_warn}
+                onChange={(e) => setAlertCfg((c) => ({ ...c, stale_days_warn: Math.max(0, Number(e.target.value) || 0) }))} />
+            </label>
+            <label className="flex items-end gap-2 pb-2 text-xs font-medium text-slate-500">
+              <input type="checkbox" checked={alertCfg.require_pii_validation}
+                onChange={(e) => setAlertCfg((c) => ({ ...c, require_pii_validation: e.target.checked }))} />
+              Require every PII column to be validated
+            </label>
+          </div>
+          <button onClick={saveAlerts} disabled={alertBusy} className="btn-primary mt-3">
+            {alertBusy ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} Save thresholds
+          </button>
         </div>
       )}
 

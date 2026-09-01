@@ -226,7 +226,7 @@ function TableDetail({ ds, onSelectCol, selCol, goto }: {
     return { validated, suggested, undocumented };
   }, [ds.columns, doc?.columns]);
 
-  const health_ = useMemo(() => computeDatasetHealth(ds, doc), [ds, doc]);
+  const health_ = useMemo(() => computeDatasetHealth(ds, doc, state?.settings.alerts), [ds, doc, state?.settings.alerts]);
 
   const saveMeta = async () => {
     await mutate((v) => api.updateDatasetMeta(ds.id, { definition: metaDef, domain: metaDomain }, v));
@@ -381,7 +381,7 @@ function TableDetail({ ds, onSelectCol, selCol, goto }: {
           <div>
             <div className="flex justify-end p-3 pb-0">
               <button onClick={() => setAutoDocOpen(true)} disabled={!llmUp}
-                className="btn-outline !py-1 text-xs" title="Auto-document every column at once">
+                className="btn-ai-outline !py-1 text-xs" title="Auto-document every column at once">
                 <Wand2 size={13} /> Auto-document table
               </button>
             </div>
@@ -790,7 +790,7 @@ function AutoDocModal({ ds, doc, onClose }: { ds: Dataset; doc: any; onClose: ()
           <h3 className="font-semibold">Auto-document — {ds.name}</h3>
           <span className="chip bg-loom-500/10 text-loom-500">{sugg.domain}</span>
           {cachedAt && <span className="chip bg-slate-500/10 text-slate-400">cached {timeAgo(cachedAt)} ago</span>}
-          <button onClick={() => load(true)} disabled={regenerating} className="btn-ghost ml-auto !p-1 text-slate-400" title="Regenerate">
+          <button onClick={() => load(true)} disabled={regenerating} className="btn-ghost ml-auto !p-1 text-loom-500" title="Regenerate">
             {regenerating ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
           </button>
           <button onClick={onClose} className="btn-ghost !p-1"><X size={16} /></button>
@@ -828,7 +828,9 @@ function AutoDocModal({ ds, doc, onClose }: { ds: Dataset; doc: any; onClose: ()
         )}
 
         <div className="mt-3 flex gap-2">
-          <button onClick={apply} disabled={applying || toApply.length === 0} className="btn-primary flex-1 justify-center text-xs">
+          <button onClick={apply} disabled={applying || toApply.length === 0}
+            className={`flex-1 justify-center text-xs ${
+              toApply.some((c) => !!doc?.columns?.[c.name]?.definition) ? "btn-danger" : "btn-ai"}`}>
             {applying ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
             Apply to {toApply.length} column{toApply.length === 1 ? "" : "s"}
           </button>
@@ -968,8 +970,11 @@ function ColumnPanel({ ds, col, onClose }: { ds: Dataset; col: Column | null; on
                 </div>
               )}
               <div className="mt-2.5 flex gap-2">
-                <button onClick={acceptSuggestion} className="btn-primary flex-1 justify-center text-xs"><Check size={13} /> Accept</button>
-                <button onClick={() => runSuggest(true)} disabled={!llmUp || aiLoading} className="btn-outline text-xs">
+                <button onClick={acceptSuggestion}
+                  className={`flex-1 justify-center text-xs ${doc?.definition ? "btn-danger" : "btn-ai"}`}>
+                  <Check size={13} /> Accept
+                </button>
+                <button onClick={() => runSuggest(true)} disabled={!llmUp || aiLoading} className="btn-ai-outline text-xs">
                   {aiLoading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Regenerate
                 </button>
                 <button onClick={() => setAiSugg(null)} className="btn-outline text-xs">Discard</button>
@@ -1016,7 +1021,7 @@ function ColumnPanel({ ds, col, onClose }: { ds: Dataset; col: Column | null; on
               <div className="flex items-center gap-2 flex-wrap">
                 <button onClick={startEdit} className="btn-outline text-xs"><Pencil size={12} /> Edit</button>
                 {!aiSugg && (
-                  <button onClick={() => runSuggest()} disabled={!llmUp || aiLoading} className="btn-outline text-xs">
+                  <button onClick={() => runSuggest()} disabled={!llmUp || aiLoading} className="btn-ai-outline text-xs">
                     {aiLoading ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
                     {cachedSuggestion ? "Show AI suggestion" : "AI suggest"}
                   </button>
@@ -1113,6 +1118,7 @@ function Mini({ label, value, sub, accent = "" }: { label: string; value: string
 // ---- Identity card + content synthesis + partitioning + mapping import ----- //
 function TableIdentity({ ds }: { ds: Dataset }) {
   const { state, health, mutate, toast } = useCatalog();
+  const { confirm, dialog } = useConfirm();
   const doc = state?.docs[ds.id];
   const [open, setOpen] = useState(false);
   const [synthLoading, setSynthLoading] = useState(false);
@@ -1127,6 +1133,14 @@ function TableIdentity({ ds }: { ds: Dataset }) {
   const identity = doc?.identity;
 
   const generate = async () => {
+    if (synth) {
+      const ok = await confirm({
+        title: "Overwrite the stored synthesis?",
+        message: "This table already has a stored content synthesis. Regenerating will replace it.",
+        tone: "warning", steps: 1, confirmLabel: "Regenerate",
+      });
+      if (!ok) return;
+    }
     setSynthLoading(true);
     try {
       const r = await mutate((v) => api.synthesizeTable(ds.id, v));
@@ -1166,7 +1180,8 @@ function TableIdentity({ ds }: { ds: Dataset }) {
             <div className="mb-1.5 flex items-center gap-2 text-xs font-semibold text-slate-500">
               <Sparkles size={13} className="text-loom-500" /> Content synthesis
               {doc?.synthesis_source && <span className="chip bg-slate-500/10 text-slate-400">{doc.synthesis_source}</span>}
-              <button onClick={generate} disabled={!llmUp || synthLoading} className="btn-outline ml-auto !py-1 text-xs">
+              <button onClick={generate} disabled={!llmUp || synthLoading}
+                className={`ml-auto !py-1 text-xs ${synth ? "btn-danger" : "btn-ai"}`}>
                 {synthLoading ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
                 {synth ? "Regenerate" : "Generate with AI"}
               </button>
@@ -1216,7 +1231,7 @@ function TableIdentity({ ds }: { ds: Dataset }) {
             <div className="flex items-center gap-2">
               <Workflow size={14} className="text-flame-500" />
               <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">ETL mapping import</span>
-              <button onClick={() => setMapOpen(true)} disabled={!llmUp} className="btn-outline ml-auto !py-1 text-xs">
+              <button onClick={() => setMapOpen(true)} disabled={!llmUp} className="btn-ai-outline ml-auto !py-1 text-xs">
                 <FileInput size={12} /> Analyse as mapping table
               </button>
             </div>
@@ -1228,6 +1243,7 @@ function TableIdentity({ ds }: { ds: Dataset }) {
       )}
 
       {mapOpen && <MappingModal ds={ds} doc={doc} onClose={() => setMapOpen(false)} />}
+      {dialog}
     </div>
   );
 }
@@ -1295,7 +1311,7 @@ function MappingModal({ ds, doc, onClose }: { ds: Dataset; doc: any; onClose: ()
           <Workflow size={18} className="text-flame-500" />
           <h3 className="font-semibold">ETL mapping — {ds.name}</h3>
           {cachedAt && <span className="chip bg-slate-500/10 text-slate-400">cached {timeAgo(cachedAt)} ago</span>}
-          <button onClick={() => load(true)} disabled={regenerating || loading} className="btn-ghost ml-auto !p-1 text-slate-400" title="Regenerate">
+          <button onClick={() => load(true)} disabled={regenerating || loading} className="btn-ghost ml-auto !p-1 text-loom-500" title="Regenerate">
             {regenerating ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
           </button>
           <button onClick={onClose} className="btn-ghost !p-1"><X size={16} /></button>

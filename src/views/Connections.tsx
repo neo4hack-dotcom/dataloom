@@ -119,7 +119,8 @@ export function Connections({ goto }: { goto: (t: Tab) => void }) {
                      <PlugZap size={13} />}
                     Test
                   </button>
-                  <button onClick={() => launch(c.id)} className="btn-primary flex-1 justify-center">
+                  <button onClick={() => launch(c.id)}
+                    className={`flex-1 justify-center ${lastRun ? "btn-danger" : "btn-ai"}`}>
                     <Zap size={15} /> Run pipeline
                   </button>
                 </div>

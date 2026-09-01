@@ -256,6 +256,25 @@ def update_connector_settings(body: ConnectorSettingsIn, request: Request,
     return {"ok": True, "config": cfg, "version": store.version}
 
 
+# -- data-quality alert thresholds (admin) -------------------------------------- #
+class AlertSettingsIn(BaseModel):
+    quality_score_warn: int | None = None
+    quality_score_critical: int | None = None
+    null_ratio_warn: float | None = None
+    row_drift_warn_pct: int | None = None
+    require_pii_validation: bool | None = None
+    stale_days_warn: int | None = None
+
+
+@app.post("/api/settings/alerts")
+def update_alert_settings(body: AlertSettingsIn, request: Request,
+                          x_base_version: int | None = Header(default=None)):
+    require_admin(request)
+    guard(x_base_version)
+    cfg = store.update_alert_settings(body.model_dump())
+    return {"ok": True, "config": cfg, "version": store.version}
+
+
 # -- MCP admin configuration ---------------------------------------------------- #
 class McpConfigIn(BaseModel):
     enabled: bool | None = None
@@ -1385,6 +1404,28 @@ def llm_explain_relationship(body: ExplainRelIn):
     store.cache_relationship_explanation(
         body.child_dataset_id, body.child_column, body.parent_dataset_id, body.parent_column, explanation)
     return {"ok": True, "explanation": explanation, "version": store.version}
+
+
+class ExplainQaIn(BaseModel):
+    dataset_id: str
+    message: str
+    severity: str
+
+
+@app.post("/api/llm/explain-quality-issue")
+def llm_explain_quality_issue(body: ExplainQaIn):
+    """Feature 6 — plain-business explanation + suggested fix for one QA issue.
+    Not persisted server-side (the qa_issues list itself is fully recomputed on
+    every QA Reviewer run) — the client only calls this on explicit user click."""
+    snap = store.snapshot(trim=False)
+    try:
+        explanation = explore.explain_qa_issue(
+            snap, body.dataset_id, body.message, body.severity, model=_llm_model())
+    except explore.LLMUnavailable:
+        raise HTTPException(503, "Local LLM unavailable")
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return {"ok": True, "explanation": explanation}
 
 
 # -- table identity card + content synthesis (cached) ------------------------ #

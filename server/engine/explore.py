@@ -437,3 +437,41 @@ def explain_relationship(snap: dict, child_ds: str, child_col: str,
     out.setdefault("confidence", 70)
     out.setdefault("caveats", [])
     return out
+
+
+# --------------------------------------------------------------------------- #
+#  Feature 6 — Data-quality issue explainer                                   #
+# --------------------------------------------------------------------------- #
+_QA_SYSTEM = (
+    "You are a senior data quality engineer reviewing a warehouse. Given one "
+    "data-quality issue and the profiled evidence for the table it was found on, "
+    "explain in plain business language what it means, why it matters, and propose "
+    "one concrete, actionable fix a data steward could apply. "
+    "Reply STRICTLY in JSON: {"
+    "\"explanation\": \"1-2 sentences on what this means and why it matters\", "
+    "\"suggested_fix\": \"1-2 concrete, actionable steps to resolve or triage it\", "
+    "\"risk\": \"low | medium | high\"}. English."
+)
+
+
+def explain_qa_issue(snap: dict, ds_id: str, message: str, severity: str,
+                     model: str | None = None) -> dict[str, Any]:
+    if not llm.is_up():
+        raise LLMUnavailable()
+    ds = _find_dataset(snap, ds_id)
+    if not ds:
+        raise ValueError(f"dataset {ds_id} not found")
+    doc = (snap.get("docs") or {}).get(ds_id, {})
+    prompt = (
+        f"Table: {ds['schema']}.{ds['name']} ({ds['row_estimate']} rows, {len(ds['columns'])} columns).\n"
+        f"Table definition on file: {doc.get('definition') or '(none)'}\n"
+        f"Domain: {doc.get('domain') or '(unknown)'}\n"
+        f"Issue (severity={severity}): {message}\n"
+    )
+    out = llm.generate(system=_QA_SYSTEM, prompt=prompt, model=model)
+    if not isinstance(out, dict) or "_raw" in out:
+        raise LLMUnavailable()
+    out.setdefault("explanation", "")
+    out.setdefault("suggested_fix", "")
+    out.setdefault("risk", severity)
+    return out

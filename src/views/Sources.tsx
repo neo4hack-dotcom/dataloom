@@ -106,8 +106,19 @@ export function Sources({ goto }: { goto: (t: Tab) => void }) {
     toast("ok", `Scope saved — ${sel.size} table(s)`);
   };
 
+  const alreadyCatalogedCount = useMemo(
+    () => [...sel].filter((k) => cataloged.has(k)).length, [sel, cataloged]);
+
   const runOnScope = async () => {
     if (sel.size === 0) { toast("err", "Select at least one table"); return; }
+    if (alreadyCatalogedCount > 0) {
+      const ok = await confirm({
+        title: "Re-run on already-catalogued tables?",
+        message: `${alreadyCatalogedCount} of your ${sel.size} selected table(s) are already in the catalog. Running agents again may overwrite existing profiling/documentation.`,
+        tone: "warning", steps: 2, confirmLabel: "Run again",
+      });
+      if (!ok) return;
+    }
     // Chain off the version returned by setScope itself — mutate()'s own `v` here would
     // still be the stale pre-save version captured by this closure, causing a 409.
     const scopeR = await mutate((v) => api.setScope(cid, [...sel], v, limitsForSelection()));
@@ -202,7 +213,10 @@ export function Sources({ goto }: { goto: (t: Tab) => void }) {
             </span>
             <div className="ml-auto flex gap-2">
               <button onClick={saveScope} className="btn-outline"><Save size={15} /> Save scope</button>
-              <button onClick={runOnScope} disabled={sel.size === 0} className="btn-primary"><Zap size={15} /> Run agents on selection</button>
+              <button onClick={runOnScope} disabled={sel.size === 0}
+                className={alreadyCatalogedCount > 0 ? "btn-danger" : "btn-ai"}>
+                <Zap size={15} /> Run agents on selection
+              </button>
             </div>
           </div>
         </>

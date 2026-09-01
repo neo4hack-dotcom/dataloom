@@ -38,6 +38,7 @@ export interface Dataset {
   row_estimate: number;
   comment: string | null;
   columns: Column[];
+  profiled_at?: number;
 }
 
 export interface CachedColumnSuggestion {
@@ -230,6 +231,15 @@ export interface ConnectorSettings {
   row_fetch_limit: number;
 }
 
+export interface AlertSettings {
+  quality_score_warn: number;
+  quality_score_critical: number;
+  null_ratio_warn: number;
+  row_drift_warn_pct: number;
+  require_pii_validation: boolean;
+  stale_days_warn: number;
+}
+
 export interface McpConfig {
   enabled: boolean;
   api_token_prefix?: string | null;
@@ -255,7 +265,7 @@ export interface CatalogState {
   model_notes: ModelNote[];
   runs: AgentRun[];
   audit: { version: number; ts: number; action: string; detail: string }[];
-  settings: { theme: string; llm: LlmConfig; connectors: ConnectorSettings; mcp: McpConfig };
+  settings: { theme: string; llm: LlmConfig; connectors: ConnectorSettings; alerts: AlertSettings; mcp: McpConfig };
   domains: Domain[];
   column_lineage: ColumnLineageEdge[];
 }

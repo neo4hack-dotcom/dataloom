@@ -1,5 +1,5 @@
 import type {
-  AgentRun, CatalogState, ColumnLineageEdge, Connection, ConnectorSettings, DiscoveredTable, Domain, Health,
+  AgentRun, AlertSettings, CatalogState, ColumnLineageEdge, Connection, ConnectorSettings, DiscoveredTable, Domain, Health,
   LlmConfig, LlmTest, McpConfig, Owner, QueryLogEntry, SearchHit, User,
 } from "./types";
 
@@ -252,6 +252,10 @@ export const api = {
       method: "POST", body: JSON.stringify(body),
     }),
 
+  explainQaIssue: (body: { dataset_id: string; message: string; severity: string }) =>
+    req<{ ok: boolean; explanation: { explanation: string; suggested_fix: string; risk: string } }>(
+      "/llm/explain-quality-issue", { method: "POST", body: JSON.stringify(body) }),
+
   // -- table identity card + content synthesis (cached) --
   synthesizeTable: (dataset_id: string, baseVersion: number) =>
     req<{ ok: boolean; result: TableSynthesis; version: number }>("/llm/synthesize-table", {
@@ -307,6 +311,11 @@ export const api = {
   // -- connector settings (admin) --
   updateConnectorSettings: (body: ConnectorSettings, baseVersion: number) =>
     req<{ ok: boolean; config: ConnectorSettings; version: number }>("/settings/connectors", {
+      method: "POST", body: JSON.stringify(body), baseVersion,
+    }),
+
+  updateAlertSettings: (body: Partial<AlertSettings>, baseVersion: number) =>
+    req<{ ok: boolean; config: AlertSettings; version: number }>("/settings/alerts", {
       method: "POST", body: JSON.stringify(body), baseVersion,
     }),
 

@@ -54,6 +54,14 @@ _DEFAULT: dict[str, Any] = {
         "connectors": {
             "row_fetch_limit": 100,
         },
+        "alerts": {
+            "quality_score_warn": 60,
+            "quality_score_critical": 35,
+            "null_ratio_warn": 0.5,
+            "row_drift_warn_pct": 20,
+            "require_pii_validation": True,
+            "stale_days_warn": 30,
+        },
         "mcp": {
             "enabled": False,
             "api_token_hash": None,
@@ -394,8 +402,21 @@ class Store:
             raise ValueError(f"Dataset {ds_id} not found")
 
     def set_dataset_doc(self, ds_id: str, doc: dict[str, Any]):
+        """Merge agent-generated fields into the dataset's doc — never replaces it
+        wholesale, so tags/domain/owners/deprecation/custom_properties/usage stats
+        and any human-validated column definition survive an agent re-run."""
         with self._lock:
-            self._db["docs"][ds_id] = doc
+            existing = self._db["docs"].setdefault(ds_id, {})
+            incoming_cols = doc.get("columns")
+            for k, v in doc.items():
+                if k != "columns":
+                    existing[k] = v
+            if incoming_cols:
+                cols = existing.setdefault("columns", {})
+                for name, cd in incoming_cols.items():
+                    if (cols.get(name) or {}).get("status") == "validated":
+                        continue  # never let an agent overwrite a human-validated column
+                    cols[name] = cd
             self._bump("doc.set", ds_id)
 
     def get_dataset_doc(self, ds_id: str) -> dict[str, Any] | None:
@@ -613,6 +634,32 @@ class Store:
         with self._lock:
             self._db["relationships"] = r; self._bump("rel.set", str(len(r)))
 
+    def merge_relationships(self, new_rels: list[dict[str, Any]]):
+        """Re-run of the Linker agent: refresh auto-inferred relationships without
+        losing what a human already did to them — a validated/rejected status or a
+        cached AI explanation carries over, and manually-added edges are never dropped."""
+        def rel_key(r):
+            c, p = r.get("child") or {}, r.get("parent") or {}
+            return (c.get("dataset_id"), c.get("column"), p.get("dataset_id"), p.get("column"))
+        with self._lock:
+            existing_by_key = {rel_key(r): r for r in self._db["relationships"]}
+            merged = []
+            for r in new_rels:
+                old = existing_by_key.get(rel_key(r))
+                if old:
+                    r = {**r}
+                    if old.get("status"):
+                        r["status"] = old["status"]
+                    if old.get("explanation"):
+                        r["explanation"] = old["explanation"]
+                merged.append(r)
+            merged_keys = {rel_key(r) for r in merged}
+            for r in self._db["relationships"]:
+                if r.get("manual") and rel_key(r) not in merged_keys:
+                    merged.append(r)
+            self._db["relationships"] = merged
+            self._bump("rel.set", str(len(merged)))
+
     def relationships(self): return self._db["relationships"]
 
     def add_relationship(self, rel: dict[str, Any]) -> dict[str, Any]:
@@ -799,6 +846,23 @@ class Store:
             if "row_fetch_limit" in patch and patch["row_fetch_limit"] is not None:
                 cfg["row_fetch_limit"] = max(1, int(patch["row_fetch_limit"]))
             self._bump("settings.connectors", f"row_fetch_limit={cfg.get('row_fetch_limit')}")
+            return cfg
+
+    @property
+    def alert_settings(self) -> dict[str, Any]:
+        return self._db["settings"].get("alerts", {})
+
+    def update_alert_settings(self, patch: dict[str, Any]):
+        with self._lock:
+            cfg = self._db["settings"].setdefault("alerts", {})
+            for k in ("quality_score_warn", "quality_score_critical", "row_drift_warn_pct", "stale_days_warn"):
+                if patch.get(k) is not None:
+                    cfg[k] = max(0, int(patch[k]))
+            if patch.get("null_ratio_warn") is not None:
+                cfg["null_ratio_warn"] = max(0.0, min(1.0, float(patch["null_ratio_warn"])))
+            if patch.get("require_pii_validation") is not None:
+                cfg["require_pii_validation"] = bool(patch["require_pii_validation"])
+            self._bump("settings.alerts", "updated")
             return cfg
 
     @property
