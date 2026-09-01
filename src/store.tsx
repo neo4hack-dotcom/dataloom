@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { api, VersionConflict } from "./api";
+import { api, Unauthorized, VersionConflict } from "./api";
+import { useAuth } from "./auth";
 import type { AgentRun, CatalogState, Health } from "./types";
 
 interface Toast { id: number; kind: "ok" | "err" | "info"; text: string; }
@@ -37,6 +38,7 @@ export function useScopedDatasets() {
 }
 
 export function CatalogProvider({ children }: { children: ReactNode }) {
+  const { user, logout } = useAuth();
   const [state, setState] = useState<CatalogState | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [loading, setLoading] = useState(true);
@@ -62,14 +64,18 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
       const [s, h] = await Promise.all([api.state(), api.health()]);
       setState(s);
       setHealth(h);
-    } catch {
-      toast("err", "API unreachable — start the backend on port 3001.");
+    } catch (e) {
+      if (e instanceof Unauthorized) logout();
+      else toast("err", "API unreachable — start the backend on port 3001.");
     } finally {
       setLoading(false);
     }
-  }, [toast]);
+  }, [toast, logout]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    if (user) refresh();
+    else setLoading(false);
+  }, [user, refresh]);
 
   const mutate = useCallback(
     async <T,>(fn: (version: number) => Promise<T>): Promise<T | undefined> => {
@@ -82,13 +88,15 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
         if (e instanceof VersionConflict) {
           toast("err", "Version conflict — catalog changed, reloading…");
           await refresh();
+        } else if (e instanceof Unauthorized) {
+          logout();
         } else {
           toast("err", (e as Error).message || "Error");
         }
         return undefined;
       }
     },
-    [state, refresh, toast]
+    [state, refresh, toast, logout]
   );
 
   // poll an active run until done

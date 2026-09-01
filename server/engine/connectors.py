@@ -19,7 +19,9 @@ from __future__ import annotations
 import random
 import datetime as dt
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Callable
+
+from .query_registry import registry as _query_registry
 
 
 class Connector(ABC):
@@ -632,7 +634,57 @@ class OKFConnector(Connector):
             return []
 
 
-def build_connector(conn: dict[str, Any]) -> Connector:
+# --------------------------------------------------------------------------- #
+#  TrackedConnector — wraps any Connector with query-registry tracking,       #
+#  cross-thread cancellation and an admin-configurable row-fetch limit.       #
+# --------------------------------------------------------------------------- #
+class TrackedConnector(Connector):
+    def __init__(self, inner: Connector, *, connection_id: str, connection_name: str,
+                 get_row_limit: Callable[[], int], source: str = "pipeline"):
+        self._inner = inner
+        self.kind = inner.kind
+        self._connection_id = connection_id
+        self._connection_name = connection_name
+        self._get_row_limit = get_row_limit
+        self._source = source
+
+    def _native_cancel_fn(self) -> Callable[[], None] | None:
+        """Best-effort native interrupt for the underlying driver, if one exists."""
+        conn = getattr(self._inner, "_conn", None)
+        if conn is not None and hasattr(conn, "cancel"):
+            return conn.cancel  # e.g. oracledb.Connection.cancel() — safe cross-thread
+        return None
+
+    def _track(self, operation: str, target: str, row_limit: int | None, fn: Callable[[], Any]) -> Any:
+        h = _query_registry.start(
+            connection_id=self._connection_id, connection_name=self._connection_name,
+            operation=operation, target=target, row_limit=row_limit, source=self._source,
+        )
+        h.set_native_cancel(self._native_cancel_fn())
+        return _query_registry.run_tracked(h, fn)
+
+    def list_tables(self) -> list[dict[str, Any]]:
+        return self._track("list_tables", self._connection_name, None, self._inner.list_tables)
+
+    def get_columns(self, schema: str, table: str) -> list[dict[str, Any]]:
+        return self._track("get_columns", f"{schema}.{table}", None,
+                           lambda: self._inner.get_columns(schema, table))
+
+    def sample_values(self, schema: str, table: str, column: str, limit: int = 2000) -> list[Any]:
+        eff_limit = min(limit, self._get_row_limit())
+        return self._track("sample_values", f"{schema}.{table}.{column}", eff_limit,
+                           lambda: self._inner.sample_values(schema, table, column, eff_limit))
+
+    def sample_rows(self, schema: str, table: str, limit: int = 500) -> list[dict[str, Any]]:
+        eff_limit = min(limit, self._get_row_limit())
+        return self._track("sample_rows", f"{schema}.{table}", eff_limit,
+                           lambda: self._inner.sample_rows(schema, table, eff_limit))
+
+    def ping(self) -> bool:
+        return self._inner.ping()
+
+
+def _build_raw_connector(conn: dict[str, Any]) -> Connector:
     t = conn.get("type")
     cfg = conn.get("config", {})
     if t == "demo":
@@ -649,3 +701,20 @@ def build_connector(conn: dict[str, Any]) -> Connector:
         return ClickHouseConnector(cfg["host"], int(cfg.get("port", 8123)),
                                    cfg["user"], cfg.get("password", ""), cfg["database"])
     raise ValueError(f"Unknown connector type: {t}")
+
+
+def build_connector(conn: dict[str, Any], *, store: Any = None, source: str = "pipeline") -> Connector:
+    """
+    Build a connector for `conn`. When `store` is given, the returned connector
+    is wrapped in TrackedConnector: every call is tracked in the query registry
+    (visible + cancellable from the Query Log) and row-fetch calls are clamped
+    to the admin-configured `settings.connectors.row_fetch_limit` (default 100).
+    """
+    raw = _build_raw_connector(conn)
+    if store is None:
+        return raw
+    return TrackedConnector(
+        raw, connection_id=conn.get("id", ""), connection_name=conn.get("name", conn.get("id", "")),
+        get_row_limit=lambda: int(store.connector_settings.get("row_fetch_limit", 100)),
+        source=source,
+    )

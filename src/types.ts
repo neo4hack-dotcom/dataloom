@@ -158,6 +158,22 @@ export interface ModelNote {
   ts: number;
 }
 
+export interface ConnectorSettings {
+  row_fetch_limit: number;
+}
+
+export interface McpConfig {
+  enabled: boolean;
+  api_token_prefix?: string | null;
+  api_token_set?: boolean;
+  tools: Record<string, boolean>;
+  exposure: {
+    hide_pii: boolean;
+    denied_datasets: string[];
+    denied_columns: { dataset_id: string; column: string }[];
+  };
+}
+
 export interface CatalogState {
   version: number;
   connections: Connection[];
@@ -171,7 +187,30 @@ export interface CatalogState {
   model_notes: ModelNote[];
   runs: AgentRun[];
   audit: { version: number; ts: number; action: string; detail: string }[];
-  settings: { theme: string; llm: LlmConfig };
+  settings: { theme: string; llm: LlmConfig; connectors: ConnectorSettings; mcp: McpConfig };
+}
+
+export interface User {
+  id: string;
+  username: string;
+  role: "admin" | "member";
+  active: boolean;
+  created_at: number;
+}
+
+export interface QueryLogEntry {
+  id: string;
+  connection_id: string;
+  connection_name: string;
+  operation: "list_tables" | "get_columns" | "sample_values" | "sample_rows";
+  target: string;
+  row_limit: number | null;
+  source: "profiler" | "discover" | "mapping" | "mcp" | "pipeline";
+  status: "running" | "done" | "cancelled" | "error";
+  started_at: number;
+  finished_at: number | null;
+  rows_returned: number | null;
+  error: string | null;
 }
 
 export interface LlmConfig {

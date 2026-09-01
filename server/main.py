@@ -7,27 +7,68 @@ Optimistic concurrency: mutating routes read X-Base-Version; mismatch -> 409.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
-from fastapi import FastAPI, Header, HTTPException
+import time
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Any
 
+import auth
 from store import Store
 from engine import llm, agents, explore
+from engine import search as search_engine
 from engine.connectors import build_connector
+from engine.query_registry import registry as query_registry
+from mcp_server import create_mcp_app
 
-app = FastAPI(title="DOINg.Catalogue API", version="1.0")
-app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 store = Store()
 
 # Apply the persisted LLM configuration to the client at startup.
 llm.configure(store.llm_config)
 
+_mcp_asgi_app, _mcp_session_manager = create_mcp_app(store)
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(app: FastAPI):
+    async with _mcp_session_manager.run():
+        yield
+
+
+app = FastAPI(title="DOINg.Catalogue API", version="1.0", lifespan=_lifespan)
+app.add_middleware(
+    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.mount("/mcp", _mcp_asgi_app)
+
 _DIST = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "dist"))
+
+# Routes reachable without a session (everything else under /api requires one).
+_PUBLIC_API_PATHS = {"/api/auth/status", "/api/auth/bootstrap", "/api/auth/login"}
+
+
+@app.middleware("http")
+async def _auth_gate(request: Request, call_next):
+    path = request.url.path
+    if not path.startswith("/api/") or path in _PUBLIC_API_PATHS:
+        return await call_next(request)
+    token = (request.headers.get("authorization") or "").removeprefix("Bearer ").strip()
+    session = store.get_session(token) if token else None
+    user = store.get_user(session["user_id"]) if session else None
+    if not user or not user.get("active", True):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    request.state.user = user
+    return await call_next(request)
+
+
+def require_admin(request: Request):
+    user = getattr(request.state, "user", None)
+    if not user or user.get("role") != auth.ADMIN:
+        raise HTTPException(403, "Admin role required")
+    return user
 
 
 def guard(base_version: int | None):
@@ -36,6 +77,193 @@ def guard(base_version: int | None):
             "error": "version_conflict", "server_version": store.version,
             "your_version": base_version,
             "message": "Catalog changed since your last read. Please reload."})
+
+
+# -- auth ---------------------------------------------------------------------- #
+class BootstrapIn(BaseModel):
+    username: str
+    password: str
+
+
+@app.get("/api/auth/status")
+def auth_status():
+    return {"bootstrap_needed": not store.has_users()}
+
+
+@app.post("/api/auth/bootstrap")
+def auth_bootstrap(body: BootstrapIn):
+    if store.has_users():
+        raise HTTPException(409, "Setup already completed")
+    if len(body.password) < 8:
+        raise HTTPException(422, "Password must be at least 8 characters")
+    user = store.add_user(body.username.strip(), auth.hash_password(body.password), auth.ADMIN)
+    token = auth.create_token()
+    store.create_session(token, user["id"])
+    return {"token": token, "user": auth.public_user(user)}
+
+
+class LoginIn(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/auth/login")
+def auth_login(body: LoginIn):
+    user = store.get_user_by_username(body.username.strip())
+    if not user or not user.get("active", True) or not auth.verify_password(body.password, user["password_hash"]):
+        raise HTTPException(401, "Invalid username or password")
+    token = auth.create_token()
+    store.create_session(token, user["id"])
+    return {"token": token, "user": auth.public_user(user)}
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request, authorization: str | None = Header(default=None)):
+    token = (authorization or "").removeprefix("Bearer ").strip()
+    if token:
+        store.delete_session(token)
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request):
+    return {"user": auth.public_user(request.state.user)}
+
+
+class UserIn(BaseModel):
+    username: str
+    password: str
+    role: str = auth.MEMBER
+
+
+@app.get("/api/users")
+def list_users(request: Request):
+    require_admin(request)
+    return {"users": [auth.public_user(u) for u in store.list_users()]}
+
+
+@app.post("/api/users")
+def create_user(body: UserIn, request: Request):
+    require_admin(request)
+    if body.role not in auth.ROLES:
+        raise HTTPException(422, f"role must be one of {auth.ROLES}")
+    if len(body.password) < 8:
+        raise HTTPException(422, "Password must be at least 8 characters")
+    try:
+        user = store.add_user(body.username.strip(), auth.hash_password(body.password), body.role)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    return {"user": auth.public_user(user)}
+
+
+class UserPatchIn(BaseModel):
+    role: str | None = None
+    active: bool | None = None
+    password: str | None = None
+
+
+@app.patch("/api/users/{uid}")
+def update_user(uid: str, body: UserPatchIn, request: Request):
+    admin = require_admin(request)
+    if body.role is not None and body.role not in auth.ROLES:
+        raise HTTPException(422, f"role must be one of {auth.ROLES}")
+    if uid == admin["id"] and (body.active is False or body.role == auth.MEMBER):
+        raise HTTPException(400, "You cannot demote or deactivate your own account")
+    patch: dict[str, Any] = {}
+    if body.role is not None:
+        patch["role"] = body.role
+    if body.active is not None:
+        patch["active"] = body.active
+    if body.password:
+        if len(body.password) < 8:
+            raise HTTPException(422, "Password must be at least 8 characters")
+        patch["password_hash"] = auth.hash_password(body.password)
+    try:
+        user = store.update_user(uid, patch)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return {"user": auth.public_user(user)}
+
+
+@app.delete("/api/users/{uid}")
+def delete_user(uid: str, request: Request):
+    admin = require_admin(request)
+    if uid == admin["id"]:
+        raise HTTPException(400, "You cannot delete your own account")
+    store.delete_user(uid)
+    return {"ok": True}
+
+
+# -- query log / cancellation -------------------------------------------------- #
+@app.get("/api/queries")
+def list_queries():
+    return {"active": query_registry.list_active(), "recent": query_registry.list_recent()}
+
+
+@app.post("/api/queries/{qid}/cancel")
+def cancel_query(qid: str):
+    ok = query_registry.cancel(qid)
+    if not ok:
+        raise HTTPException(404, "query not found or already finished")
+    return {"ok": True}
+
+
+# -- connector settings (admin) ------------------------------------------------ #
+class ConnectorSettingsIn(BaseModel):
+    row_fetch_limit: int
+
+
+@app.post("/api/settings/connectors")
+def update_connector_settings(body: ConnectorSettingsIn, request: Request,
+                              x_base_version: int | None = Header(default=None)):
+    require_admin(request)
+    guard(x_base_version)
+    cfg = store.update_connector_settings(body.model_dump())
+    return {"ok": True, "config": cfg, "version": store.version}
+
+
+# -- MCP admin configuration ---------------------------------------------------- #
+class McpConfigIn(BaseModel):
+    enabled: bool | None = None
+    tools: dict[str, bool] | None = None
+    exposure: dict[str, Any] | None = None
+
+
+@app.get("/api/mcp/config")
+def get_mcp_config(request: Request):
+    require_admin(request)
+    cfg = dict(store.mcp_config)
+    cfg.pop("api_token_hash", None)
+    cfg["api_token_set"] = bool(store.mcp_config.get("api_token_hash"))
+    return {"config": cfg}
+
+
+@app.post("/api/mcp/config")
+def post_mcp_config(body: McpConfigIn, request: Request,
+                    x_base_version: int | None = Header(default=None)):
+    require_admin(request)
+    guard(x_base_version)
+    cfg = store.update_mcp_config(body.model_dump(exclude_none=True))
+    cfg = dict(cfg)
+    cfg.pop("api_token_hash", None)
+    return {"ok": True, "config": cfg, "version": store.version}
+
+
+@app.post("/api/mcp/token")
+def rotate_mcp_token(request: Request, x_base_version: int | None = Header(default=None)):
+    require_admin(request)
+    guard(x_base_version)
+    token = auth.create_token()
+    store.set_mcp_token(auth.hash_token(token), token[:8])
+    return {"token": token, "prefix": token[:8], "version": store.version}
+
+
+@app.delete("/api/mcp/token")
+def revoke_mcp_token(request: Request, x_base_version: int | None = Header(default=None)):
+    require_admin(request)
+    guard(x_base_version)
+    store.set_mcp_token(None, None)
+    return {"ok": True, "version": store.version}
 
 
 # --------------------------------------------------------------------------- #
@@ -92,7 +320,7 @@ def discover_tables(cid: str, x_base_version: int | None = Header(default=None))
     if not conn:
         raise HTTPException(404, "connection not found")
     try:
-        connector = build_connector(conn)
+        connector = build_connector(conn, store=store, source="discover")
         tables = connector.list_tables()
     except Exception as e:
         raise HTTPException(422, f"Discovery failed: {e}")
@@ -405,29 +633,7 @@ def search(body: SearchIn):
     return {"query": q, "hits": hits[:25], "answer": answer, "llm": llm.is_up()}
 
 
-def _lexical_search(q: str, snap: dict) -> list[dict]:
-    import re
-    terms = [t for t in re.split(r"\W+", q.lower()) if len(t) >= 2]
-    results = []
-    for d in snap["datasets"]:
-        doc = snap["docs"].get(d["id"], {})
-        for c in d["columns"]:
-            cdoc = (doc.get("columns") or {}).get(c["name"], {})
-            hay = " ".join([
-                d["name"], d["schema"], c["name"], c["profile"]["semantic_type"],
-                cdoc.get("definition", ""), doc.get("definition", ""), doc.get("domain", ""),
-            ]).lower()
-            score = sum(hay.count(t) for t in terms)
-            if score:
-                results.append({
-                    "dataset_id": d["id"], "dataset": f"{d['schema']}.{d['name']}",
-                    "column": c["name"], "semantic_type": c["profile"]["semantic_type"],
-                    "quality": c["profile"]["quality_score"],
-                    "definition": cdoc.get("definition", ""),
-                    "domain": doc.get("domain", ""), "score": score,
-                })
-    results.sort(key=lambda r: -r["score"])
-    return results
+_lexical_search = search_engine.lexical_search
 
 
 def _format_context(hits: list[dict], snap: dict) -> str:
@@ -927,7 +1133,7 @@ def mapping_detect(body: MappingDetectIn):
     rows: list[dict] = []
     if conn:
         try:
-            rows = build_connector(conn).sample_rows(ds["schema"], ds["name"], limit=50)
+            rows = build_connector(conn, store=store, source="mapping").sample_rows(ds["schema"], ds["name"], limit=50)
         except Exception:
             rows = []
     try:
@@ -960,7 +1166,7 @@ def mapping_apply(body: MappingApplyIn, x_base_version: int | None = Header(defa
     if not conn:
         raise HTTPException(404, "connection not found")
     try:
-        rows = build_connector(conn).sample_rows(ds["schema"], ds["name"], limit=body.limit)
+        rows = build_connector(conn, store=store, source="mapping").sample_rows(ds["schema"], ds["name"], limit=body.limit)
     except Exception as e:
         raise HTTPException(422, f"Could not read mapping rows: {e}")
 

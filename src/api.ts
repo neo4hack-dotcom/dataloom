@@ -1,4 +1,7 @@
-import type { AgentRun, CatalogState, Connection, DiscoveredTable, Health, LlmConfig, LlmTest } from "./types";
+import type {
+  AgentRun, CatalogState, Connection, ConnectorSettings, DiscoveredTable, Health,
+  LlmConfig, LlmTest, McpConfig, QueryLogEntry, User,
+} from "./types";
 
 export class VersionConflict extends Error {
   serverVersion: number;
@@ -6,6 +9,21 @@ export class VersionConflict extends Error {
     super("version_conflict");
     this.serverVersion = serverVersion;
   }
+}
+
+export class Unauthorized extends Error {
+  constructor() { super("unauthorized"); }
+}
+
+const TOKEN_KEY = "dl.authToken";
+
+export function getAuthToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setAuthToken(token: string | null) {
+  if (token) localStorage.setItem(TOKEN_KEY, token);
+  else localStorage.removeItem(TOKEN_KEY);
 }
 
 async function req<T>(
@@ -18,7 +36,10 @@ async function req<T>(
     ...(rest.headers as Record<string, string>),
   };
   if (baseVersion !== undefined) headers["X-Base-Version"] = String(baseVersion);
+  const token = getAuthToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(`/api${path}`, { ...rest, headers });
+  if (res.status === 401) throw new Unauthorized();
   if (res.status === 409) {
     const body = await res.json().catch(() => ({}));
     throw new VersionConflict(body?.detail?.server_version ?? -1);
@@ -238,6 +259,51 @@ export const api = {
   importBackup: (backup: unknown, mode: "replace" | "merge", baseVersion: number) =>
     req<{ ok: boolean; mode: string; summary: Record<string, number>; version: number }>(
       "/import/backup", { method: "POST", body: JSON.stringify({ backup, mode }), baseVersion }),
+
+  // -- auth --
+  authStatus: () => req<{ bootstrap_needed: boolean }>("/auth/status"),
+  bootstrap: (username: string, password: string) =>
+    req<{ token: string; user: User }>("/auth/bootstrap", {
+      method: "POST", body: JSON.stringify({ username, password }),
+    }),
+  login: (username: string, password: string) =>
+    req<{ token: string; user: User }>("/auth/login", {
+      method: "POST", body: JSON.stringify({ username, password }),
+    }),
+  logout: () => req<{ ok: boolean }>("/auth/logout", { method: "POST" }),
+  me: () => req<{ user: User }>("/auth/me"),
+
+  // -- users (admin) --
+  listUsers: () => req<{ users: User[] }>("/users"),
+  createUser: (body: { username: string; password: string; role: "admin" | "member" }) =>
+    req<{ user: User }>("/users", { method: "POST", body: JSON.stringify(body) }),
+  updateUser: (id: string, patch: { role?: "admin" | "member"; active?: boolean; password?: string }) =>
+    req<{ user: User }>(`/users/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  deleteUser: (id: string) =>
+    req<{ ok: boolean }>(`/users/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
+  // -- query log --
+  listQueries: () => req<{ active: QueryLogEntry[]; recent: QueryLogEntry[] }>("/queries"),
+  cancelQuery: (id: string) => req<{ ok: boolean }>(`/queries/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
+
+  // -- connector settings (admin) --
+  updateConnectorSettings: (body: ConnectorSettings, baseVersion: number) =>
+    req<{ ok: boolean; config: ConnectorSettings; version: number }>("/settings/connectors", {
+      method: "POST", body: JSON.stringify(body), baseVersion,
+    }),
+
+  // -- MCP admin --
+  getMcpConfig: () => req<{ config: McpConfig }>("/mcp/config"),
+  updateMcpConfig: (
+    patch: { enabled?: boolean; tools?: Record<string, boolean>; exposure?: Partial<McpConfig["exposure"]> },
+    baseVersion: number
+  ) => req<{ ok: boolean; config: McpConfig; version: number }>("/mcp/config", {
+    method: "POST", body: JSON.stringify(patch), baseVersion,
+  }),
+  rotateMcpToken: (baseVersion: number) =>
+    req<{ token: string; prefix: string; version: number }>("/mcp/token", { method: "POST", baseVersion }),
+  revokeMcpToken: (baseVersion: number) =>
+    req<{ ok: boolean; version: number }>("/mcp/token", { method: "DELETE", baseVersion }),
 };
 
 export interface ColumnSuggestion {

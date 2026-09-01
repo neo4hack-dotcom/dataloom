@@ -38,7 +38,7 @@ class ProfilerAgent:
     desc = "Introspecte les sources, échantillonne et calcule l'empreinte de chaque colonne (types sémantiques, MinHash, qualité)."
 
     def run(self, store, conn: dict[str, Any], log: LogFn) -> dict[str, Any]:
-        c = build_connector(conn)
+        c = build_connector(conn, store=store, source="profiler")
         log("info", f"Connection '{conn['name']}' ({conn['type']}) established.")
         tables = c.list_tables()
         scope = conn.get("_scope")  # list of "schema.name" — the user-selected scope

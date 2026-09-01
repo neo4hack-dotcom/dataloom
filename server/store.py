@@ -34,6 +34,8 @@ _DEFAULT: dict[str, Any] = {
     "model_notes": [],
     "runs": [],
     "audit": [],
+    "users": [],
+    "sessions": {},
     "settings": {
         "theme": "dark",
         "llm": {
@@ -43,6 +45,28 @@ _DEFAULT: dict[str, Any] = {
             "temperature": 0.2,
             "max_tokens": 2048,
             "last_test": None,
+        },
+        "connectors": {
+            "row_fetch_limit": 100,
+        },
+        "mcp": {
+            "enabled": False,
+            "api_token_hash": None,
+            "api_token_prefix": None,
+            "tools": {
+                "list_datasets": True,
+                "get_dataset_schema": True,
+                "search_catalog": True,
+                "get_column_definition": True,
+                "get_lineage": False,
+                "get_glossary_term": True,
+                "sample_dataset_rows": False,
+            },
+            "exposure": {
+                "hide_pii": True,
+                "denied_datasets": [],
+                "denied_columns": [],
+            },
         },
     },
 }
@@ -70,7 +94,9 @@ class Store:
 
     @staticmethod
     def _migrate_settings(db: dict[str, Any]) -> None:
-        """Ensure settings.llm exists; migrate legacy settings.llm_model → llm.model."""
+        """Ensure settings.llm/connectors/mcp exist; migrate legacy settings.llm_model → llm.model."""
+        db.setdefault("users", [])
+        db.setdefault("sessions", {})
         s = db.setdefault("settings", {})
         llm = s.get("llm")
         if not isinstance(llm, dict):
@@ -82,6 +108,27 @@ class Store:
             for k, v in _DEFAULT["settings"]["llm"].items():
                 llm.setdefault(k, v)
         s.pop("llm_model", None)
+
+        connectors = s.get("connectors")
+        if not isinstance(connectors, dict):
+            connectors = copy.deepcopy(_DEFAULT["settings"]["connectors"])
+            s["connectors"] = connectors
+        else:
+            for k, v in _DEFAULT["settings"]["connectors"].items():
+                connectors.setdefault(k, v)
+
+        mcp_cfg = s.get("mcp")
+        if not isinstance(mcp_cfg, dict):
+            mcp_cfg = copy.deepcopy(_DEFAULT["settings"]["mcp"])
+            s["mcp"] = mcp_cfg
+        else:
+            for k, v in _DEFAULT["settings"]["mcp"].items():
+                if k in ("tools", "exposure"):
+                    sub = mcp_cfg.setdefault(k, {})
+                    for sk, sv in v.items():
+                        sub.setdefault(sk, sv)
+                else:
+                    mcp_cfg.setdefault(k, v)
 
     def _flush(self):
         tmp = self.path + ".tmp"
@@ -110,6 +157,12 @@ class Store:
     def snapshot(self, *, trim: bool = True) -> dict[str, Any]:
         with self._lock:
             db = copy.deepcopy(self._db)
+        # users/sessions/secrets never travel through the catalog snapshot
+        db.pop("users", None)
+        db.pop("sessions", None)
+        mcp_cfg = db.get("settings", {}).get("mcp")
+        if isinstance(mcp_cfg, dict):
+            mcp_cfg.pop("api_token_hash", None)
         if trim:
             for d in db["datasets"]:
                 for c in d["columns"]:
@@ -507,3 +560,109 @@ class Store:
         with self._lock:
             self._db["settings"].setdefault("llm", {})["last_test"] = result
             self._flush()  # not version-bumping (transient diagnostic)
+
+    @property
+    def connector_settings(self) -> dict[str, Any]:
+        return self._db["settings"].get("connectors", {})
+
+    def update_connector_settings(self, patch: dict[str, Any]):
+        with self._lock:
+            cfg = self._db["settings"].setdefault("connectors", {})
+            if "row_fetch_limit" in patch and patch["row_fetch_limit"] is not None:
+                cfg["row_fetch_limit"] = max(1, int(patch["row_fetch_limit"]))
+            self._bump("settings.connectors", f"row_fetch_limit={cfg.get('row_fetch_limit')}")
+            return cfg
+
+    @property
+    def mcp_config(self) -> dict[str, Any]:
+        return self._db["settings"].get("mcp", {})
+
+    def update_mcp_config(self, patch: dict[str, Any]):
+        """Merge a partial MCP config (enabled / tools / exposure)."""
+        with self._lock:
+            cfg = self._db["settings"].setdefault("mcp", {})
+            if "enabled" in patch and patch["enabled"] is not None:
+                cfg["enabled"] = bool(patch["enabled"])
+            if isinstance(patch.get("tools"), dict):
+                cfg.setdefault("tools", {}).update(patch["tools"])
+            if isinstance(patch.get("exposure"), dict):
+                exp = cfg.setdefault("exposure", {})
+                for k in ("hide_pii", "denied_datasets", "denied_columns"):
+                    if k in patch["exposure"] and patch["exposure"][k] is not None:
+                        exp[k] = patch["exposure"][k]
+            self._bump("settings.mcp", "config updated")
+            return cfg
+
+    def set_mcp_token(self, token_hash: str | None, prefix: str | None):
+        with self._lock:
+            cfg = self._db["settings"].setdefault("mcp", {})
+            cfg["api_token_hash"] = token_hash
+            cfg["api_token_prefix"] = prefix
+            self._bump("settings.mcp.token", "token rotated" if token_hash else "token revoked")
+            return cfg
+
+    # -- users ----------------------------------------------------------------- #
+    def has_users(self) -> bool:
+        return len(self._db["users"]) > 0
+
+    def add_user(self, username: str, password_hash: str, role: str) -> dict[str, Any]:
+        with self._lock:
+            if any(u["username"].lower() == username.lower() for u in self._db["users"]):
+                raise ValueError(f"User '{username}' already exists")
+            user = {
+                "id": f"user_{int(time.time()*1000)}", "username": username,
+                "password_hash": password_hash, "role": role, "active": True,
+                "created_at": time.time(),
+            }
+            self._db["users"].append(user)
+            self._bump("user.add", username)
+            return user
+
+    def get_user(self, uid: str) -> dict[str, Any] | None:
+        return next((u for u in self._db["users"] if u["id"] == uid), None)
+
+    def get_user_by_username(self, username: str) -> dict[str, Any] | None:
+        return next((u for u in self._db["users"] if u["username"].lower() == username.lower()), None)
+
+    def list_users(self) -> list[dict[str, Any]]:
+        return self._db["users"]
+
+    def update_user(self, uid: str, patch: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            user = self.get_user(uid)
+            if not user:
+                raise ValueError("user not found")
+            for k in ("role", "active", "password_hash"):
+                if k in patch and patch[k] is not None:
+                    user[k] = patch[k]
+            self._bump("user.update", uid)
+            return user
+
+    def delete_user(self, uid: str):
+        with self._lock:
+            self._db["users"] = [u for u in self._db["users"] if u["id"] != uid]
+            self._db["sessions"] = {t: s for t, s in self._db["sessions"].items() if s.get("user_id") != uid}
+            self._bump("user.delete", uid)
+
+    # -- sessions ---------------------------------------------------------------- #
+    def create_session(self, token: str, user_id: str, ttl_seconds: int = 60 * 60 * 24 * 30) -> dict[str, Any]:
+        with self._lock:
+            session = {"user_id": user_id, "created_at": time.time(),
+                       "expires_at": time.time() + ttl_seconds}
+            self._db["sessions"][token] = session
+            self._flush()  # not version-bumping (not part of catalog state)
+            return session
+
+    def get_session(self, token: str) -> dict[str, Any] | None:
+        session = self._db["sessions"].get(token)
+        if not session:
+            return None
+        if session.get("expires_at", 0) < time.time():
+            self.delete_session(token)
+            return None
+        return session
+
+    def delete_session(self, token: str):
+        with self._lock:
+            self._db["sessions"].pop(token, None)
+            self._flush()
