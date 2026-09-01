@@ -20,6 +20,12 @@ interface Ctx {
   /** global source scope: "all" or a connection id — filters every view */
   activeConn: string;
   setActiveConn: (id: string) => void;
+  /** cross-view drill-down: Search/CommandPalette/Impact Analysis set this, Catalog reads it on mount */
+  focusDataset: { dsId: string; col?: string } | null;
+  setFocusDataset: (f: { dsId: string; col?: string } | null) => void;
+  /** cross-view drill-down into Impact Analysis, pre-selecting a dataset+column */
+  focusImpact: { dsId: string; col: string } | null;
+  setFocusImpact: (f: { dsId: string; col: string } | null) => void;
 }
 
 const CatalogContext = createContext<Ctx | null>(null);
@@ -46,6 +52,8 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [activeConn, setActiveConnState] = useState<string>(
     () => localStorage.getItem("dl.activeConn") || "all");
+  const [focusDataset, setFocusDataset] = useState<{ dsId: string; col?: string } | null>(null);
+  const [focusImpact, setFocusImpact] = useState<{ dsId: string; col: string } | null>(null);
   const toastId = useRef(0);
 
   const setActiveConn = useCallback((id: string) => {
@@ -118,7 +126,10 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
   }, [activeRun, refresh, toast]);
 
   return (
-    <CatalogContext.Provider value={{ state, health, loading, toasts, refresh, toast, mutate, activeRun, setActiveRun, activeConn, setActiveConn }}>
+    <CatalogContext.Provider value={{
+      state, health, loading, toasts, refresh, toast, mutate, activeRun, setActiveRun, activeConn, setActiveConn,
+      focusDataset, setFocusDataset, focusImpact, setFocusImpact,
+    }}>
       {children}
     </CatalogContext.Provider>
   );

@@ -74,7 +74,7 @@ export function Login() {
     <div className="grid h-screen place-items-center bg-grid">
       <div className="card w-full max-w-sm p-6">
         <div className="mb-5 flex items-center gap-2.5">
-          <div className="grid h-9 w-9 place-items-center rounded-lg bg-gradient-to-br from-loom-500 to-violet-600 text-white shadow-lg shadow-loom-600/30">
+          <div className="grid h-9 w-9 place-items-center rounded-lg bg-gradient-to-br from-loom-400 to-loom-700 text-white shadow-lg shadow-loom-600/30">
             <Workflow size={20} />
           </div>
           <div>

@@ -1,6 +1,6 @@
 import type {
-  AgentRun, CatalogState, Connection, ConnectorSettings, DiscoveredTable, Health,
-  LlmConfig, LlmTest, McpConfig, QueryLogEntry, User,
+  AgentRun, CatalogState, ColumnLineageEdge, Connection, ConnectorSettings, DiscoveredTable, Domain, Health,
+  LlmConfig, LlmTest, McpConfig, Owner, QueryLogEntry, SearchHit, User,
 } from "./types";
 
 export class VersionConflict extends Error {
@@ -176,11 +176,10 @@ export const api = {
   dismissQA: (idx: number, baseVersion: number) =>
     req<{ ok: boolean; version: number }>(`/qa/${idx}`, { method: "DELETE", baseVersion }),
 
-  // -- search --
+  // -- search (universal — datasets, columns, glossary, tags, domains) --
   search: (q: string) =>
-    req<{ query: string; hits: any[]; answer: string | null; llm: boolean }>("/search", {
-      method: "POST", body: JSON.stringify({ q }),
-    }),
+    req<{ query: string; hits: SearchHit[]; facets: Record<string, number>; answer: string | null; llm: boolean }>(
+      "/search", { method: "POST", body: JSON.stringify({ q }) }),
 
   // -- OKF import --
   importOKF: (body: { content?: Record<string, unknown>; url?: string; connection_id?: string }, baseVersion: number) =>
@@ -323,6 +322,83 @@ export const api = {
     req<{ token: string; prefix: string; version: number }>("/mcp/token", { method: "POST", baseVersion }),
   revokeMcpToken: (baseVersion: number) =>
     req<{ ok: boolean; version: number }>("/mcp/token", { method: "DELETE", baseVersion }),
+
+  // -- tags --
+  addDatasetTag: (dsId: string, tag: string, baseVersion: number) =>
+    req<{ ok: boolean; version: number }>(`/datasets/${encodeURIComponent(dsId)}/tags`, {
+      method: "POST", body: JSON.stringify({ tag }), baseVersion,
+    }),
+  removeDatasetTag: (dsId: string, tag: string, baseVersion: number) =>
+    req<{ ok: boolean; version: number }>(`/datasets/${encodeURIComponent(dsId)}/tags/${encodeURIComponent(tag)}`, {
+      method: "DELETE", baseVersion,
+    }),
+  addColumnTag: (dsId: string, col: string, tag: string, baseVersion: number) =>
+    req<{ ok: boolean; version: number }>(`/columns/${encodeURIComponent(dsId)}/${encodeURIComponent(col)}/tags`, {
+      method: "POST", body: JSON.stringify({ tag }), baseVersion,
+    }),
+  removeColumnTag: (dsId: string, col: string, tag: string, baseVersion: number) =>
+    req<{ ok: boolean; version: number }>(
+      `/columns/${encodeURIComponent(dsId)}/${encodeURIComponent(col)}/tags/${encodeURIComponent(tag)}`,
+      { method: "DELETE", baseVersion }),
+
+  // -- domains --
+  addDomain: (body: { name: string; parent_id?: string | null; description?: string; color?: string }, baseVersion: number) =>
+    req<{ domain: Domain; version: number }>("/domains", { method: "POST", body: JSON.stringify(body), baseVersion }),
+  updateDomain: (id: string, patch: Partial<Pick<Domain, "name" | "parent_id" | "description" | "color">>, baseVersion: number) =>
+    req<{ domain: Domain; version: number }>(`/domains/${encodeURIComponent(id)}`, {
+      method: "PATCH", body: JSON.stringify(patch), baseVersion,
+    }),
+  deleteDomain: (id: string, baseVersion: number) =>
+    req<{ ok: boolean; version: number }>(`/domains/${encodeURIComponent(id)}`, { method: "DELETE", baseVersion }),
+  setDatasetDomain: (dsId: string, domainId: string | null, baseVersion: number) =>
+    req<{ ok: boolean; version: number }>(`/datasets/${encodeURIComponent(dsId)}/domain`, {
+      method: "POST", body: JSON.stringify({ domain_id: domainId }), baseVersion,
+    }),
+
+  // -- ownership --
+  addDatasetOwner: (dsId: string, body: { name: string; type: Owner["type"]; user_id?: string | null }, baseVersion: number) =>
+    req<{ owner: Owner; version: number }>(`/datasets/${encodeURIComponent(dsId)}/owners`, {
+      method: "POST", body: JSON.stringify(body), baseVersion,
+    }),
+  removeDatasetOwner: (dsId: string, ownerId: string, baseVersion: number) =>
+    req<{ ok: boolean; version: number }>(`/datasets/${encodeURIComponent(dsId)}/owners/${encodeURIComponent(ownerId)}`, {
+      method: "DELETE", baseVersion,
+    }),
+
+  // -- deprecation --
+  deprecateDataset: (dsId: string, reason: string, replacementDatasetId: string | null, baseVersion: number) =>
+    req<{ ok: boolean; version: number }>(`/datasets/${encodeURIComponent(dsId)}/deprecate`, {
+      method: "POST", body: JSON.stringify({ reason, replacement_dataset_id: replacementDatasetId }), baseVersion,
+    }),
+  undeprecateDataset: (dsId: string, baseVersion: number) =>
+    req<{ ok: boolean; version: number }>(`/datasets/${encodeURIComponent(dsId)}/undeprecate`, {
+      method: "POST", baseVersion,
+    }),
+
+  // -- usage / popularity --
+  recordDatasetView: (dsId: string) =>
+    req<{ ok: boolean }>(`/datasets/${encodeURIComponent(dsId)}/view`, { method: "POST" }),
+
+  // -- custom properties --
+  setCustomProperty: (dsId: string, key: string, value: string, baseVersion: number) =>
+    req<{ ok: boolean; version: number }>(`/datasets/${encodeURIComponent(dsId)}/properties`, {
+      method: "POST", body: JSON.stringify({ key, value }), baseVersion,
+    }),
+  deleteCustomProperty: (dsId: string, key: string, baseVersion: number) =>
+    req<{ ok: boolean; version: number }>(`/datasets/${encodeURIComponent(dsId)}/properties/${encodeURIComponent(key)}`, {
+      method: "DELETE", baseVersion,
+    }),
+
+  // -- column-level lineage / impact analysis --
+  addColumnLineage: (body: {
+    from_dataset_id: string; from_column: string; to_dataset_id: string; to_column: string;
+    via?: string; kind?: string; confidence?: number;
+  }, baseVersion: number) =>
+    req<{ edge: ColumnLineageEdge; version: number }>("/lineage/columns", {
+      method: "POST", body: JSON.stringify(body), baseVersion,
+    }),
+  deleteColumnLineage: (idx: number, baseVersion: number) =>
+    req<{ ok: boolean; version: number }>(`/lineage/columns/${idx}`, { method: "DELETE", baseVersion }),
 };
 
 export interface ColumnSuggestion {

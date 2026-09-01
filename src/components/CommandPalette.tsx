@@ -2,16 +2,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   LayoutDashboard, Database, Table2, GitCompare, Workflow, Bot, Tags,
   Search, Settings as SettingsIcon, Sparkles, CornerDownLeft, Zap,
+  BookOpen, Tag as TagIcon, Globe2, Route,
 } from "lucide-react";
 import { useCatalog } from "../store";
 import { api } from "../api";
-import { shortDs } from "../lib/ui";
 import type { Tab } from "../App";
 
 interface Item { id: string; label: string; sub?: string; icon: typeof Database; run: () => void; group: string; }
 
 export function CommandPalette({ open, onClose, goto }: { open: boolean; onClose: () => void; goto: (t: Tab) => void; }) {
-  const { state, mutate, setActiveRun, toast } = useCatalog();
+  const { state, mutate, setActiveRun, toast, setFocusDataset } = useCatalog();
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -25,6 +25,9 @@ export function CommandPalette({ open, onClose, goto }: { open: boolean; onClose
       { id: "n-cat", group: "Navigate", label: "Catalog", icon: Table2, run: () => goto("catalog") },
       { id: "n-rel", group: "Navigate", label: "Relationships", icon: GitCompare, run: () => goto("relationships") },
       { id: "n-lin", group: "Navigate", label: "Lineage", icon: Workflow, run: () => goto("lineage") },
+      { id: "n-imp", group: "Navigate", label: "Impact Analysis", icon: Route, run: () => goto("impact") },
+      { id: "n-dom", group: "Navigate", label: "Domains", icon: Globe2, run: () => goto("domains") },
+      { id: "n-tags", group: "Navigate", label: "Tags", icon: TagIcon, run: () => goto("tags") },
       { id: "n-agt", group: "Navigate", label: "Agents", icon: Bot, run: () => goto("agents") },
       { id: "n-glo", group: "Navigate", label: "Glossary", icon: Tags, run: () => goto("glossary") },
       { id: "n-search", group: "Navigate", label: "Search", icon: Search, run: () => goto("search") },
@@ -45,10 +48,27 @@ export function CommandPalette({ open, onClose, goto }: { open: boolean; onClose
     const ds: Item[] = (state?.datasets ?? []).map((d) => ({
       id: `d-${d.id}`, group: "Tables", label: `${d.schema}.${d.name}`,
       sub: `${d.columns.length} columns`, icon: Table2,
-      run: () => goto("catalog"),
+      run: () => { setFocusDataset({ dsId: d.id }); goto("catalog"); },
     }));
-    return [...actions, ...nav, ...ds];
-  }, [state, goto, mutate, setActiveRun, toast]);
+    const glossary: Item[] = (state?.glossary ?? []).map((g) => ({
+      id: `g-${g.term}`, group: "Glossary", label: g.term,
+      sub: g.definition, icon: BookOpen,
+      run: () => goto("glossary"),
+    }));
+    const tagSet = new Set<string>();
+    for (const doc of Object.values(state?.docs ?? {})) {
+      for (const t of doc.tags ?? []) tagSet.add(t);
+      for (const c of Object.values(doc.columns ?? {})) for (const t of c.tags ?? []) tagSet.add(t);
+    }
+    const tags: Item[] = [...tagSet].map((t) => ({
+      id: `t-${t}`, group: "Tags", label: t, icon: TagIcon, run: () => goto("tags"),
+    }));
+    const domains: Item[] = (state?.domains ?? []).map((d) => ({
+      id: `dom-${d.id}`, group: "Domains", label: d.name,
+      sub: d.description, icon: Globe2, run: () => goto("domains"),
+    }));
+    return [...actions, ...nav, ...ds, ...glossary, ...tags, ...domains];
+  }, [state, goto, mutate, setActiveRun, toast, setFocusDataset]);
 
   const filtered = useMemo(() => {
     if (!q.trim()) return items.slice(0, 12);

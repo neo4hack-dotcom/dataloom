@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Tag as TagIcon, X } from "lucide-react";
 
 // ---- semantic-type visual vocabulary -------------------------------------- //
 export const SEMANTIC_COLORS: Record<string, string> = {
@@ -92,7 +93,7 @@ export function Donut({
   );
 }
 
-export function Sparkbars({ values, color = "#3b74f5", height = 36 }: { values: number[]; color?: string; height?: number }) {
+export function Sparkbars({ values, color = "#009f3d", height = 36 }: { values: number[]; color?: string; height?: number }) {
   const max = Math.max(...values, 1);
   return (
     <div className="flex items-end gap-0.5" style={{ height }}>
@@ -142,4 +143,105 @@ export function timeAgo(ts: number): string {
 
 export function shortDs(id: string): string {
   return id.split("::").pop() ?? id;
+}
+
+// ---- deterministic name-based color (tags, avatars, domains) --------------- //
+const NAME_PALETTE = [
+  { bg: "bg-rose-500/15", text: "text-rose-500", solid: "#f43f5e" },
+  { bg: "bg-amber-500/15", text: "text-amber-500", solid: "#f59e0b" },
+  { bg: "bg-emerald-500/15", text: "text-emerald-500", solid: "#10b981" },
+  { bg: "bg-teal-500/15", text: "text-teal-500", solid: "#14b8a6" },
+  { bg: "bg-cyan-500/15", text: "text-cyan-500", solid: "#06b6d4" },
+  { bg: "bg-blue-500/15", text: "text-blue-500", solid: "#3b82f6" },
+  { bg: "bg-violet-500/15", text: "text-violet-500", solid: "#8b5cf6" },
+  { bg: "bg-fuchsia-500/15", text: "text-fuchsia-500", solid: "#d946ef" },
+  { bg: "bg-pink-500/15", text: "text-pink-500", solid: "#ec4899" },
+  { bg: "bg-orange-500/15", text: "text-orange-500", solid: "#f97316" },
+];
+
+export function nameColor(name: string) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return NAME_PALETTE[h % NAME_PALETTE.length];
+}
+
+// ---- Tags -------------------------------------------------------------------- //
+export function TagChip({ tag, onRemove, onClick }: { tag: string; onRemove?: () => void; onClick?: () => void }) {
+  const c = nameColor(tag);
+  const Comp = onClick ? "button" : "span";
+  return (
+    <Comp onClick={onClick} className={`chip ${c.bg} ${c.text} ${onClick ? "cursor-pointer hover:brightness-110" : ""}`}>
+      <TagIcon size={10} /> {tag}
+      {onRemove && (
+        <button onClick={(e) => { e.stopPropagation(); onRemove(); }} className="ml-0.5 opacity-60 hover:opacity-100">
+          <X size={10} />
+        </button>
+      )}
+    </Comp>
+  );
+}
+
+// ---- Ownership ----------------------------------------------------------------- //
+export function initials(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  return (parts[0]?.[0] ?? "") + (parts.length > 1 ? parts[parts.length - 1][0] ?? "" : parts[0]?.[1] ?? "");
+}
+
+export function AvatarStack({ names, max = 5, size = 22 }: { names: string[]; max?: number; size?: number }) {
+  const shown = names.slice(0, max);
+  const extra = names.length - shown.length;
+  return (
+    <div className="flex items-center -space-x-2">
+      {shown.map((name, i) => {
+        const c = nameColor(name);
+        return (
+          <div key={i} title={name}
+            className={`grid shrink-0 place-items-center rounded-full border-2 border-white font-bold dark:border-slate-900 ${c.bg} ${c.text}`}
+            style={{ width: size, height: size, fontSize: size * 0.4 }}>
+            {initials(name).toUpperCase()}
+          </div>
+        );
+      })}
+      {extra > 0 && (
+        <div className="grid shrink-0 place-items-center rounded-full border-2 border-white bg-slate-200 font-bold text-slate-500 dark:border-slate-900 dark:bg-slate-700"
+          style={{ width: size, height: size, fontSize: size * 0.35 }}>
+          +{extra}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- Data-quality health ------------------------------------------------------- //
+export function healthColor(score: number): string {
+  if (score >= 80) return "#10b981";
+  if (score >= 50) return "#f59e0b";
+  return "#f43f5e";
+}
+
+export function healthTextClass(score: number): string {
+  if (score >= 80) return "text-emerald-500";
+  if (score >= 50) return "text-amber-500";
+  return "text-rose-500";
+}
+
+export function HealthRing({ score, size = 40, thickness = 5, showLabel = true }: {
+  score: number; size?: number; thickness?: number; showLabel?: boolean;
+}) {
+  const r = (size - thickness) / 2;
+  const c = 2 * Math.PI * r;
+  const filled = Math.max(0, Math.min(100, score)) / 100 * c;
+  const color = healthColor(score);
+  return (
+    <div className="relative inline-grid place-items-center shrink-0" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="-rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" className="stroke-slate-200 dark:stroke-slate-800" strokeWidth={thickness} />
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={thickness}
+          strokeDasharray={`${filled} ${c - filled}`} strokeLinecap="round" style={{ transition: "stroke-dasharray .4s" }} />
+      </svg>
+      {showLabel && (
+        <span className="absolute font-bold" style={{ color, fontSize: size * 0.3 }}>{Math.round(score)}</span>
+      )}
+    </div>
+  );
 }

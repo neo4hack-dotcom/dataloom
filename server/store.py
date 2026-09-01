@@ -39,6 +39,8 @@ _DEFAULT: dict[str, Any] = {
     "users": [],
     "sessions": {},
     "admin_reset": {"code": None, "expires_at": None},
+    "domains": [],
+    "column_lineage": [],
     "settings": {
         "theme": "dark",
         "llm": {
@@ -193,6 +195,8 @@ class Store:
             self._db["glossary"] = []
             self._db["model_notes"] = []
             self._db["runs"] = []
+            self._db["domains"] = []
+            self._db["column_lineage"] = []
             self._bump("catalog.reset", "")
 
     # -- backup / restore ---------------------------------------------------- #
@@ -341,6 +345,9 @@ class Store:
                 if r["child"]["dataset_id"] != ds_id and r["parent"]["dataset_id"] != ds_id]
             self._db["lineage"] = [
                 e for e in self._db["lineage"] if e["from"] != ds_id and e["to"] != ds_id]
+            self._db["column_lineage"] = [
+                e for e in self._db["column_lineage"]
+                if e["from"]["dataset_id"] != ds_id and e["to"]["dataset_id"] != ds_id]
             self._bump("dataset.delete", ds_id)
 
     def datasets(self) -> list[dict[str, Any]]:
@@ -446,6 +453,150 @@ class Store:
                     r["explanation"] = {**explanation, "cached_at": time.time()}
                     break
             self._bump("rel.explanation_cache", f"{child_ds}.{child_col}")
+
+    # -- tags ------------------------------------------------------------------ #
+    def add_dataset_tag(self, ds_id: str, tag: str):
+        with self._lock:
+            doc = self._db["docs"].setdefault(ds_id, {})
+            tags = doc.setdefault("tags", [])
+            if tag not in tags:
+                tags.append(tag)
+            self._bump("tag.add", f"{ds_id}:{tag}")
+
+    def remove_dataset_tag(self, ds_id: str, tag: str):
+        with self._lock:
+            doc = self._db["docs"].get(ds_id) or {}
+            if tag in (doc.get("tags") or []):
+                doc["tags"].remove(tag)
+            self._bump("tag.remove", f"{ds_id}:{tag}")
+
+    def add_column_tag(self, ds_id: str, col: str, tag: str):
+        with self._lock:
+            doc = self._db["docs"].setdefault(ds_id, {"columns": {}})
+            cols = doc.setdefault("columns", {})
+            cols.setdefault(col, {})
+            tags = cols[col].setdefault("tags", [])
+            if tag not in tags:
+                tags.append(tag)
+            self._bump("tag.add_col", f"{ds_id}.{col}:{tag}")
+
+    def remove_column_tag(self, ds_id: str, col: str, tag: str):
+        with self._lock:
+            doc = self._db["docs"].get(ds_id) or {}
+            cdoc = (doc.get("columns") or {}).get(col) or {}
+            if tag in (cdoc.get("tags") or []):
+                cdoc["tags"].remove(tag)
+            self._bump("tag.remove_col", f"{ds_id}.{col}:{tag}")
+
+    # -- domains (hierarchical) ------------------------------------------------ #
+    def list_domains(self) -> list[dict[str, Any]]:
+        return self._db["domains"]
+
+    def add_domain(self, name: str, parent_id: str | None, description: str, color: str) -> dict[str, Any]:
+        with self._lock:
+            domain = {"id": f"dom_{int(time.time()*1000)}", "name": name,
+                     "parent_id": parent_id, "description": description, "color": color}
+            self._db["domains"].append(domain)
+            self._bump("domain.add", name)
+            return domain
+
+    def update_domain(self, domain_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            d = next((x for x in self._db["domains"] if x["id"] == domain_id), None)
+            if not d:
+                raise ValueError("domain not found")
+            for k in ("name", "parent_id", "description", "color"):
+                if k in patch and patch[k] is not None:
+                    d[k] = patch[k]
+            self._bump("domain.update", domain_id)
+            return d
+
+    def delete_domain(self, domain_id: str):
+        with self._lock:
+            if any(x.get("parent_id") == domain_id for x in self._db["domains"]):
+                raise ValueError("delete or move sub-domains first")
+            self._db["domains"] = [x for x in self._db["domains"] if x["id"] != domain_id]
+            for doc in self._db["docs"].values():
+                if doc.get("domain_id") == domain_id:
+                    doc["domain_id"] = None
+            self._bump("domain.delete", domain_id)
+
+    def set_dataset_domain(self, ds_id: str, domain_id: str | None):
+        with self._lock:
+            doc = self._db["docs"].setdefault(ds_id, {})
+            doc["domain_id"] = domain_id
+            self._bump("domain.assign", f"{ds_id}->{domain_id}")
+
+    # -- ownership -------------------------------------------------------------- #
+    def add_dataset_owner(self, ds_id: str, owner: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            doc = self._db["docs"].setdefault(ds_id, {})
+            owners = doc.setdefault("owners", [])
+            owner = {**owner, "id": owner.get("id") or f"own_{int(time.time()*1000)}"}
+            owners.append(owner)
+            self._bump("owner.add", f"{ds_id}:{owner.get('name')}")
+            return owner
+
+    def remove_dataset_owner(self, ds_id: str, owner_id: str):
+        with self._lock:
+            doc = self._db["docs"].get(ds_id) or {}
+            doc["owners"] = [o for o in (doc.get("owners") or []) if o["id"] != owner_id]
+            self._bump("owner.remove", f"{ds_id}:{owner_id}")
+
+    # -- deprecation -------------------------------------------------------------- #
+    def set_deprecation(self, ds_id: str, info: dict[str, Any] | None):
+        with self._lock:
+            doc = self._db["docs"].setdefault(ds_id, {})
+            doc["deprecated"] = info
+            self._bump("deprecation.set", ds_id)
+
+    # -- usage / popularity (informational — not version-bumping) -------------- #
+    def record_dataset_view(self, ds_id: str):
+        with self._lock:
+            doc = self._db["docs"].setdefault(ds_id, {})
+            doc["view_count"] = int(doc.get("view_count") or 0) + 1
+            doc["last_viewed_at"] = time.time()
+            self._flush()
+
+    # -- custom / structured properties ----------------------------------------- #
+    def set_custom_property(self, ds_id: str, key: str, value: str):
+        with self._lock:
+            doc = self._db["docs"].setdefault(ds_id, {})
+            props = doc.setdefault("custom_properties", {})
+            props[key] = value
+            self._bump("property.set", f"{ds_id}:{key}")
+
+    def delete_custom_property(self, ds_id: str, key: str):
+        with self._lock:
+            doc = self._db["docs"].get(ds_id) or {}
+            (doc.get("custom_properties") or {}).pop(key, None)
+            self._bump("property.delete", f"{ds_id}:{key}")
+
+    # -- profile history (drives row-count-drift health check) ------------------ #
+    def record_profile_snapshot(self, ds_id: str, row_estimate: int, ts: float):
+        with self._lock:
+            doc = self._db["docs"].setdefault(ds_id, {})
+            history = doc.setdefault("profile_history", [])
+            history.append({"row_estimate": row_estimate, "ts": ts})
+            doc["profile_history"] = history[-10:]
+            self._flush()  # informational — the profiling run itself bumps the version
+
+    # -- column-level lineage (explicit non-FK derivations) ---------------------- #
+    def add_column_lineage_edge(self, edge: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            edge.setdefault("manual", True)
+            edge.setdefault("confidence", 100)
+            self._db["column_lineage"].append(edge)
+            self._bump("col_lineage.add",
+                      f"{edge['from']['dataset_id']}.{edge['from']['column']} -> "
+                      f"{edge['to']['dataset_id']}.{edge['to']['column']}")
+            return edge
+
+    def delete_column_lineage_edge(self, idx: int):
+        with self._lock:
+            if 0 <= idx < len(self._db["column_lineage"]):
+                self._db["column_lineage"].pop(idx)
+                self._bump("col_lineage.delete", str(idx))
 
     # -- analysis results ---------------------------------------------------- #
     def set_matches(self, m):

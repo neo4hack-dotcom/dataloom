@@ -264,7 +264,7 @@ export function SettingsView() {
       {/* OKF Import */}
       <div className="card p-5">
         <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
-          <Upload size={16} className="text-violet-500" /> Import Frictionless Data Package (OKF)
+          <Upload size={16} className="text-loom-500" /> Import Frictionless Data Package (OKF)
         </div>
         <p className="mb-3 text-xs text-slate-400">
           Import a <code className="rounded bg-slate-100 px-1 dark:bg-slate-800">datapackage.json</code> (Open Knowledge Foundation / Google Dataset Search format) to populate the catalog with table schemas, field definitions, and FK relationships.
