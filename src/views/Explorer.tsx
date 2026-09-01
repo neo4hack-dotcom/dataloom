@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Compass, Search, Sparkles, Table2, KeyRound, Lock, ChevronRight, Check, X,
-  Loader2, MessageSquareText, ListTodo, Zap, Send, BookOpen, Star, ArrowRight,
-  Wand2, ShieldCheck,
+  Compass, Search, Sparkles, Table2, KeyRound, Lock, ChevronRight, Check,
+  Loader2, MessageSquareText, ListTodo, Send, BookOpen, Star, ArrowRight,
+  ShieldCheck, PenLine,
 } from "lucide-react";
 import { useCatalog, useScopedDatasets } from "../store";
-import { api, type ColumnSuggestion, type CompletionItem, type TableSuggestion } from "../api";
+import { api, type CompletionItem } from "../api";
 import {
-  EmptyState, semanticColor, confidenceColor, QualityBar, shortDs,
+  EmptyState, semanticColor, shortDs,
 } from "../lib/ui";
 import type { Column, Dataset } from "../types";
 
@@ -163,18 +163,12 @@ function TreeNode({ d, q, selCol, pins, onTogglePin, onSelectCol }: {
   );
 }
 
-// ---- evidence panel + LLM suggest ----------------------------------------- //
+// ---- evidence panel (read-only auto-exploration; editing happens in Catalog) //
 function EvidencePanel({ ds, col, llmUp, onGoto }: {
   ds: Dataset | null; col: Column | null; llmUp: boolean;
   onGoto: (dsId: string, col: string) => void;
 }) {
-  const { state, mutate, toast } = useCatalog();
-  const [loading, setLoading] = useState(false);
-  const [sugg, setSugg] = useState<ColumnSuggestion | null>(null);
-  const [docLoading, setDocLoading] = useState(false);
-  const [tableSugg, setTableSugg] = useState<TableSuggestion | null>(null);
-
-  useEffect(() => { setSugg(null); setTableSugg(null); }, [col?.name, ds?.id]);
+  const { state } = useCatalog();
 
   if (!ds) {
     return <div className="card grid h-full place-items-center text-sm text-slate-400">
@@ -184,48 +178,6 @@ function EvidencePanel({ ds, col, llmUp, onGoto }: {
 
   const doc = state?.docs[ds.id];
 
-  const runSuggest = async () => {
-    if (!col) return;
-    setLoading(true); setSugg(null);
-    try {
-      const r = await api.suggestColumn(ds.id, col.name);
-      setSugg(r.suggestion);
-    } catch (e) {
-      toast("err", (e as Error).message.includes("503") ? "Local LLM unavailable" : "Suggestion failed");
-    } finally { setLoading(false); }
-  };
-
-  const applySuggest = async () => {
-    if (!col || !sugg) return;
-    await mutate((v) => api.applyColumn({
-      dataset_id: ds.id, column: col.name,
-      definition: sugg.definition, calculation: sugg.calculation,
-      sensitivity: sugg.sensitivity, status: "validated",
-    }, v));
-    toast("ok", `${col.name} documented ✓`);
-    setSugg(null);
-  };
-
-  const runDocTable = async () => {
-    setDocLoading(true); setTableSugg(null);
-    try {
-      const r = await api.documentTable(ds.id);
-      setTableSugg(r.result);
-    } catch (e) {
-      toast("err", (e as Error).message.includes("503") ? "Local LLM unavailable" : "Documentation failed");
-    } finally { setDocLoading(false); }
-  };
-
-  const applyDocTable = async () => {
-    if (!tableSugg) return;
-    await mutate((v) => api.applyTable({
-      dataset_id: ds.id, table_definition: tableSugg.table_definition,
-      domain: tableSugg.domain, columns: tableSugg.columns,
-    }, v));
-    toast("ok", `${ds.name} fully documented ✓`);
-    setTableSugg(null);
-  };
-
   return (
     <div className="card flex h-full flex-col overflow-hidden">
       {/* header */}
@@ -233,59 +185,25 @@ function EvidencePanel({ ds, col, llmUp, onGoto }: {
         <Table2 size={16} className="text-loom-500" />
         <span className="font-semibold">{ds.schema}.{ds.name}</span>
         {doc?.domain && <span className="chip bg-loom-500/10 text-loom-500">{doc.domain}</span>}
-        <button onClick={runDocTable} disabled={!llmUp || docLoading}
-          className="btn-primary ml-auto !py-1 text-xs" title="Auto-document every column at once">
-          {docLoading ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
-          Auto-document table
-        </button>
+        <span className="ml-auto flex items-center gap-1 text-[11px] text-slate-400">
+          <PenLine size={12} /> Edit definitions in Catalog
+        </span>
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto p-4">
-        {/* table-level batch suggestion */}
-        {tableSugg && (
-          <div className="mb-4 rounded-xl border border-loom-500/30 bg-loom-500/5 p-3">
-            <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-loom-600 dark:text-loom-300">
-              <Sparkles size={15} /> Suggested documentation for the whole table
-              <span className="chip bg-loom-500/10 text-loom-500">{tableSugg.domain}</span>
-            </div>
-            <p className="mb-2 text-sm text-slate-600 dark:text-slate-300">{tableSugg.table_definition}</p>
-            <div className="max-h-48 space-y-1 overflow-auto rounded-lg bg-white/50 p-2 dark:bg-slate-900/40">
-              {tableSugg.columns.map((c) => (
-                <div key={c.name} className="flex items-start gap-2 text-xs">
-                  <span className="font-mono font-semibold shrink-0">{c.name}</span>
-                  {c.sensitivity === "PII" && <Lock size={10} className="mt-0.5 shrink-0 text-rose-400" />}
-                  <span className="text-slate-500">{c.definition}</span>
-                  <span className={`ml-auto shrink-0 font-mono ${confidenceColor(c.confidence)}`}>{c.confidence}%</span>
-                </div>
-              ))}
-            </div>
-            <div className="mt-2 flex gap-2">
-              <button onClick={applyDocTable} className="btn-primary flex-1 justify-center text-xs">
-                <Check size={13} /> Apply all
-              </button>
-              <button onClick={() => setTableSugg(null)} className="btn-outline text-xs"><X size={13} /></button>
-            </div>
-          </div>
-        )}
-
         {!col ? (
           <div className="grid place-items-center py-10 text-sm text-slate-400">
-            <div className="text-center">Select a column to see its evidence and get an AI suggestion.</div>
+            <div className="text-center">Select a column to see its fingerprint and current documentation.</div>
           </div>
         ) : (
-          <ColumnEvidence ds={ds} col={col} doc={doc?.columns?.[col.name]}
-            llmUp={llmUp} loading={loading} sugg={sugg}
-            onSuggest={runSuggest} onApply={applySuggest} onDiscard={() => setSugg(null)} />
+          <ColumnEvidence col={col} doc={doc?.columns?.[col.name]} />
         )}
       </div>
     </div>
   );
 }
 
-function ColumnEvidence({ ds, col, doc, llmUp, loading, sugg, onSuggest, onApply, onDiscard }: {
-  ds: Dataset; col: Column; doc: any; llmUp: boolean; loading: boolean;
-  sugg: ColumnSuggestion | null; onSuggest: () => void; onApply: () => void; onDiscard: () => void;
-}) {
+function ColumnEvidence({ col, doc }: { col: Column; doc: any }) {
   const p = col.profile;
   return (
     <div className="space-y-4">
@@ -294,57 +212,19 @@ function ColumnEvidence({ ds, col, doc, llmUp, loading, sugg, onSuggest, onApply
         <span className={`chip ${semanticColor(p.semantic_type)}`}>{p.semantic_type}</span>
         <span className="font-mono text-xs text-slate-400">{col.data_type}</span>
         {p.sensitivity === "PII" && <span className="chip bg-rose-500/10 text-rose-500"><Lock size={10} /> PII</span>}
-        <button onClick={onSuggest} disabled={!llmUp || loading} className="btn-primary ml-auto !py-1 text-xs">
-          {loading ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
-          AI suggest
-        </button>
       </div>
 
       {/* current doc */}
-      {doc?.definition && (
+      {doc?.definition ? (
         <div className="rounded-lg border border-slate-200 p-2.5 text-sm dark:border-slate-800">
           <div className="mb-0.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase text-slate-400">
             Current definition {doc.status === "validated" && <ShieldCheck size={11} className="text-emerald-500" />}
           </div>
           <p className="text-slate-600 dark:text-slate-300">{doc.definition}</p>
         </div>
-      )}
-
-      {/* AI suggestion card */}
-      {sugg && (
-        <div className="rounded-xl border border-loom-500/30 bg-loom-500/5 p-3 animate-fade-in">
-          <div className="mb-1.5 flex items-center gap-2 text-sm font-semibold text-loom-600 dark:text-loom-300">
-            <Sparkles size={15} /> AI suggestion
-            <span className={`ml-auto chip ${confidenceColor(sugg.confidence)} bg-current/10`}>conf. {sugg.confidence}%</span>
-          </div>
-          <p className="text-sm text-slate-700 dark:text-slate-200">{sugg.definition}</p>
-          {sugg.calculation && (
-            <div className="mt-1.5 rounded bg-white/60 p-1.5 font-mono text-xs text-slate-600 dark:bg-slate-900/50 dark:text-slate-300">
-              {sugg.calculation}
-            </div>
-          )}
-          <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]">
-            <span className={`chip ${semanticColor(sugg.semantic_type)}`}>{sugg.semantic_type}</span>
-            <span className={`chip ${sugg.sensitivity === "PII" ? "bg-rose-500/10 text-rose-500" : "bg-slate-500/10 text-slate-400"}`}>
-              {sugg.sensitivity}
-            </span>
-          </div>
-          {sugg.evidence.length > 0 && (
-            <div className="mt-2 border-t border-loom-500/15 pt-2">
-              <div className="mb-1 text-[10px] font-semibold uppercase text-slate-400">Grounded in</div>
-              <ul className="space-y-0.5">
-                {sugg.evidence.map((e, i) => (
-                  <li key={i} className="flex items-start gap-1.5 text-[11px] text-slate-500">
-                    <Check size={11} className="mt-0.5 shrink-0 text-emerald-500" /> {e}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          <div className="mt-2.5 flex gap-2">
-            <button onClick={onApply} className="btn-primary flex-1 justify-center text-xs"><Check size={13} /> Accept</button>
-            <button onClick={onDiscard} className="btn-outline text-xs">Discard</button>
-          </div>
+      ) : (
+        <div className="rounded-lg border border-dashed border-slate-300 p-2.5 text-xs text-slate-400 dark:border-slate-700">
+          No definition yet — open this column in the <b>Catalog</b> view to get an AI suggestion or write one yourself.
         </div>
       )}
 
@@ -444,7 +324,7 @@ function CompletionQueue({ llmUp, onPick }: {
         )}
       </div>
       <div className="border-t border-slate-200 px-3 py-2 text-[11px] text-slate-400 dark:border-slate-800">
-        Click an item → jump to its column, then <b>AI suggest</b> to close it in one click.
+        Click an item → jump to its column, then open it in the <b>Catalog</b> view to get an AI suggestion and apply it.
       </div>
     </div>
   );

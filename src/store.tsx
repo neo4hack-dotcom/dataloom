@@ -101,14 +101,15 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
 
   // poll an active run until done
   useEffect(() => {
-    if (!activeRun || activeRun.status === "done" || activeRun.status === "error") return;
+    if (!activeRun || activeRun.status === "done" || activeRun.status === "error" || activeRun.status === "cancelled") return;
     const t = setInterval(async () => {
       try {
         const r = await api.getRun(activeRun.id);
         setActiveRun(r);
-        if (r.status === "done" || r.status === "error") {
+        if (r.status === "done" || r.status === "error" || r.status === "cancelled") {
           await refresh();
           if (r.status === "done") toast("ok", "Pipeline complete ✓");
+          else if (r.status === "cancelled") toast("info", "Pipeline cancelled");
           else toast("err", "Pipeline failed");
         }
       } catch { /* ignore */ }

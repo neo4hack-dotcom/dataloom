@@ -40,6 +40,16 @@ export interface Dataset {
   columns: Column[];
 }
 
+export interface CachedColumnSuggestion {
+  definition: string;
+  calculation: string | null;
+  semantic_type: string;
+  sensitivity: string;
+  confidence: number;
+  evidence: string[];
+  cached_at: number;
+}
+
 export interface ColumnDoc {
   definition?: string;
   calculation?: string | null;
@@ -49,6 +59,9 @@ export interface ColumnDoc {
   sensitivity?: string;
   source_file?: string;   // optional origin file/topic (csv/txt/bulk/API/kafka…)
   source_field?: string;  // optional origin field name in that source
+  // last AI suggestion generated for this column — persisted so re-opening the
+  // panel doesn't call the LLM again; only "Regenerate" forces a fresh call.
+  llm_suggestion?: CachedColumnSuggestion;
 }
 
 export interface TablePartition {
@@ -69,6 +82,16 @@ export interface DatasetDoc {
   synthesis_at?: number;
   suggested_partition?: string | null;
   partitioning?: { column?: string; explanation?: string; partitions?: TablePartition[] };
+  // cached LLM previews — persisted so reopening a modal doesn't recall the LLM
+  llm_table_suggestion?: {
+    table_definition: string; domain: string;
+    columns: { name: string; definition: string; calculation: string | null; sensitivity: string; confidence: number }[];
+    cached_at: number;
+  };
+  llm_mapping_detection?: {
+    roles: Record<string, string | null>; confidence: number; reason: string;
+    columns: string[]; sample: Record<string, unknown>[]; cached_at: number;
+  };
 }
 
 export interface DiscoveredTable {
@@ -88,6 +111,9 @@ export interface Connection {
   discovered_tables?: DiscoveredTable[];
   discovered_at?: number;
   scope?: string[];
+  scope_row_limits?: Record<string, number>;
+  scope_row_counts?: Record<string, number>;
+  scope_row_counts_at?: Record<string, number>;
 }
 
 export interface MatchPair {
@@ -110,6 +136,8 @@ export interface Relationship {
   confidence: number;
   reason: string;
   status?: "suggested" | "validated" | "rejected";
+  // cached AI explanation — persisted so reopening doesn't recall the LLM
+  explanation?: { meaning: string; cardinality: string; confidence: number; caveats: string[]; cached_at: number };
 }
 
 export interface LineageEdge {
@@ -143,7 +171,7 @@ export interface AgentRun {
   id: string;
   connection_id: string;
   agents: string[];
-  status: "queued" | "running" | "done" | "error";
+  status: "queued" | "running" | "done" | "error" | "cancelled";
   progress: number;
   current_agent: string | null;
   logs: RunLog[];
@@ -202,7 +230,7 @@ export interface QueryLogEntry {
   id: string;
   connection_id: string;
   connection_name: string;
-  operation: "list_tables" | "get_columns" | "sample_values" | "sample_rows";
+  operation: "list_tables" | "get_columns" | "sample_values" | "sample_rows" | "count_rows";
   target: string;
   row_limit: number | null;
   source: "profiler" | "discover" | "mapping" | "mcp" | "pipeline";

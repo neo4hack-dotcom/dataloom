@@ -250,6 +250,17 @@ class Store:
     def get_connection(self, cid: str) -> dict[str, Any] | None:
         return next((c for c in self._db["connections"] if c["id"] == cid), None)
 
+    def update_connection(self, cid: str, patch: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            conn = self.get_connection(cid)
+            if not conn:
+                raise ValueError("connection not found")
+            for k in ("name", "config", "llm_model"):
+                if k in patch and patch[k] is not None:
+                    conn[k] = patch[k]
+            self._bump("connection.update", conn["name"])
+            return conn
+
     def delete_connection(self, cid: str):
         with self._lock:
             self._db["connections"] = [c for c in self._db["connections"] if c["id"] != cid]
@@ -268,19 +279,33 @@ class Store:
             self._bump("connection.discover", f"{cid}: {len(tables)} tables")
             return tables
 
-    def set_scope(self, cid: str, keys: list[str]):
-        """Persist the user-selected scope (list of 'schema.name') for a connection."""
+    def set_scope(self, cid: str, keys: list[str], row_limits: dict[str, int] | None = None):
+        """Persist the user-selected scope (list of 'schema.name') for a connection,
+        plus an optional per-table row-fetch limit chosen after a row-count check."""
         with self._lock:
             conn = self.get_connection(cid)
             if not conn:
                 raise ValueError("connection not found")
             conn["scope"] = keys
+            if row_limits is not None:
+                conn["scope_row_limits"] = row_limits
             self._bump("connection.scope", f"{cid}: {len(keys)} tables")
             return keys
 
     def get_scope(self, cid: str) -> list[str]:
         conn = self.get_connection(cid)
         return (conn or {}).get("scope", [])
+
+    def set_table_row_count(self, cid: str, table_key: str, count: int):
+        """Cache the last known live row count for one table (informational, refreshable)."""
+        with self._lock:
+            conn = self.get_connection(cid)
+            if not conn:
+                raise ValueError("connection not found")
+            counts = conn.setdefault("scope_row_counts", {})
+            counts[table_key] = count
+            conn.setdefault("scope_row_counts_at", {})[table_key] = time.time()
+            self._flush()  # informational cache — not version-bumping
 
     # -- datasets / docs ----------------------------------------------------- #
     def upsert_datasets(self, datasets: list[dict[str, Any]]):
@@ -390,6 +415,37 @@ class Store:
             cols.setdefault(col, {})
             cols[col].update(patch)
             self._bump("col.update", f"{ds_id}.{col}")
+
+    # -- LLM output caches (never re-call the LLM for a preview already seen) - #
+    def cache_column_suggestion(self, ds_id: str, col: str, suggestion: dict[str, Any]):
+        with self._lock:
+            doc = self._db["docs"].setdefault(ds_id, {"columns": {}})
+            cols = doc.setdefault("columns", {})
+            cols.setdefault(col, {})
+            cols[col]["llm_suggestion"] = {**suggestion, "cached_at": time.time()}
+            self._bump("doc.suggestion_cache", f"{ds_id}.{col}")
+
+    def cache_table_suggestion(self, ds_id: str, suggestion: dict[str, Any]):
+        with self._lock:
+            doc = self._db["docs"].setdefault(ds_id, {})
+            doc["llm_table_suggestion"] = {**suggestion, "cached_at": time.time()}
+            self._bump("doc.table_suggestion_cache", ds_id)
+
+    def cache_mapping_detection(self, ds_id: str, result: dict[str, Any]):
+        with self._lock:
+            doc = self._db["docs"].setdefault(ds_id, {})
+            doc["llm_mapping_detection"] = {**result, "cached_at": time.time()}
+            self._bump("doc.mapping_cache", ds_id)
+
+    def cache_relationship_explanation(self, child_ds: str, child_col: str,
+                                       parent_ds: str, parent_col: str, explanation: dict[str, Any]):
+        with self._lock:
+            for r in self._db["relationships"]:
+                if (r["child"]["dataset_id"] == child_ds and r["child"]["column"] == child_col and
+                        r["parent"]["dataset_id"] == parent_ds and r["parent"]["column"] == parent_col):
+                    r["explanation"] = {**explanation, "cached_at": time.time()}
+                    break
+            self._bump("rel.explanation_cache", f"{child_ds}.{child_col}")
 
     # -- analysis results ---------------------------------------------------- #
     def set_matches(self, m):
@@ -510,11 +566,27 @@ class Store:
             run = {"id": f"run_{int(time.time()*1000)}", "connection_id": conn_id,
                    "agents": agent_ids, "status": "queued", "progress": 0.0,
                    "current_agent": None, "logs": [], "created_at": time.time(),
-                   "summary": {}}
+                   "summary": {}, "cancel_requested": False}
             self._db["runs"].insert(0, run)
             self._db["runs"] = self._db["runs"][:50]
             self._bump("run.create", run["id"])
             return run
+
+    def request_run_cancel(self, run_id: str) -> bool:
+        """Ask an in-progress run to stop between agents/tables (checked cooperatively)."""
+        with self._lock:
+            for r in self._db["runs"]:
+                if r["id"] == run_id:
+                    if r["status"] not in ("queued", "running"):
+                        return False
+                    r["cancel_requested"] = True
+                    self._flush()
+                    return True
+            return False
+
+    def is_run_cancel_requested(self, run_id: str) -> bool:
+        r = self.get_run(run_id)
+        return bool(r and r.get("cancel_requested"))
 
     def update_run(self, run_id: str, patch: dict[str, Any]):
         with self._lock:

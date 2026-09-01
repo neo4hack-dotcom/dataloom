@@ -58,6 +58,16 @@ class Connector(ABC):
         except Exception:
             return False
 
+    def count_rows(self, schema: str, table: str) -> int | None:
+        """Live `SELECT COUNT(*)`-style row count, if the connector supports one.
+
+        None means "not supported" (e.g. OKF) — the caller should treat that as
+        unknown rather than zero. This is intentionally NOT in the sample-value
+        fetch path: it's only ever triggered one table at a time, opt-in, from the
+        Discovery row-count-check step.
+        """
+        return None
+
 
 # --------------------------------------------------------------------------- #
 #  Demo connector — a synthetic but coherent retail + clickstream warehouse.   #
@@ -358,6 +368,12 @@ class DemoConnector(Connector):
             rows = self._synth_rows(schema, table)
         return [dict(r) for r in rows[:limit]]
 
+    def count_rows(self, schema: str, table: str) -> int | None:
+        if (schema, table) in self._tables:
+            return len(self._tables[(schema, table)][1])
+        spec = getattr(self, "_synth", {}).get((schema, table))
+        return spec["row_estimate"] if spec else None
+
     # -- lazy synthetic-row generation (cached) ------------------------------ #
     def _synth_rows(self, schema: str, table: str) -> list[dict[str, Any]]:
         if not hasattr(self, "_synth"):
@@ -464,6 +480,11 @@ class OracleConnector(Connector):
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur]
 
+    def count_rows(self, schema: str, table: str) -> int | None:
+        cur = self._conn.cursor()
+        cur.execute(f'SELECT COUNT(*) FROM "{schema}"."{table}"')
+        return int(cur.fetchone()[0])
+
 
 class ClickHouseConnector(Connector):
     kind = "clickhouse"
@@ -504,6 +525,10 @@ class ClickHouseConnector(Connector):
         res = self._client.query(f'SELECT * FROM `{schema}`.`{table}` LIMIT {int(limit)}')
         cols = res.column_names
         return [dict(zip(cols, row)) for row in res.result_rows]
+
+    def count_rows(self, schema: str, table: str) -> int | None:
+        res = self._client.query(f'SELECT count() FROM `{schema}`.`{table}`')
+        return int(res.result_rows[0][0])
 
 
 # --------------------------------------------------------------------------- #
@@ -640,13 +665,22 @@ class OKFConnector(Connector):
 # --------------------------------------------------------------------------- #
 class TrackedConnector(Connector):
     def __init__(self, inner: Connector, *, connection_id: str, connection_name: str,
-                 get_row_limit: Callable[[], int], source: str = "pipeline"):
+                 get_row_limit: Callable[[], int], source: str = "pipeline",
+                 per_table_limits: dict[str, int] | None = None):
         self._inner = inner
         self.kind = inner.kind
         self._connection_id = connection_id
         self._connection_name = connection_name
         self._get_row_limit = get_row_limit
         self._source = source
+        # Explicit, user-confirmed per-table sample size (set after a row-count check in
+        # Sources & scope) — authoritative for that table, NOT re-clamped by the admin's
+        # general row_fetch_limit, which only guards the unconfirmed/default path.
+        self._per_table_limits = per_table_limits or {}
+
+    def _effective_limit(self, schema: str, table: str, requested: int) -> int:
+        override = self._per_table_limits.get(f"{schema}.{table}")
+        return override if override is not None else min(requested, self._get_row_limit())
 
     def _native_cancel_fn(self) -> Callable[[], None] | None:
         """Best-effort native interrupt for the underlying driver, if one exists."""
@@ -671,14 +705,18 @@ class TrackedConnector(Connector):
                            lambda: self._inner.get_columns(schema, table))
 
     def sample_values(self, schema: str, table: str, column: str, limit: int = 2000) -> list[Any]:
-        eff_limit = min(limit, self._get_row_limit())
+        eff_limit = self._effective_limit(schema, table, limit)
         return self._track("sample_values", f"{schema}.{table}.{column}", eff_limit,
                            lambda: self._inner.sample_values(schema, table, column, eff_limit))
 
     def sample_rows(self, schema: str, table: str, limit: int = 500) -> list[dict[str, Any]]:
-        eff_limit = min(limit, self._get_row_limit())
+        eff_limit = self._effective_limit(schema, table, limit)
         return self._track("sample_rows", f"{schema}.{table}", eff_limit,
                            lambda: self._inner.sample_rows(schema, table, eff_limit))
+
+    def count_rows(self, schema: str, table: str) -> int | None:
+        return self._track("count_rows", f"{schema}.{table}", None,
+                           lambda: self._inner.count_rows(schema, table))
 
     def ping(self) -> bool:
         return self._inner.ping()
@@ -716,5 +754,5 @@ def build_connector(conn: dict[str, Any], *, store: Any = None, source: str = "p
     return TrackedConnector(
         raw, connection_id=conn.get("id", ""), connection_name=conn.get("name", conn.get("id", "")),
         get_row_limit=lambda: int(store.connector_settings.get("row_fetch_limit", 100)),
-        source=source,
+        source=source, per_table_limits=conn.get("scope_row_limits"),
     )

@@ -64,14 +64,27 @@ export const api = {
   }),
   deleteConnection: (id: string, baseVersion: number) =>
     req<{ ok: boolean; version: number }>(`/connections/${id}`, { method: "DELETE", baseVersion }),
+  updateConnection: (
+    id: string,
+    patch: { name?: string; config?: Record<string, unknown>; llm_model?: string | null },
+    baseVersion: number
+  ) => req<{ connection: Connection; version: number }>(`/connections/${id}`, {
+    method: "PATCH", body: JSON.stringify(patch), baseVersion,
+  }),
+  pingConnection: (id: string) => req<{ ok: boolean }>(`/connections/${id}/ping`, { method: "POST" }),
 
   // -- discovery & scope (big-volume sources) --
   discover: (cid: string, baseVersion: number) =>
     req<{ ok: boolean; count: number; tables: DiscoveredTable[]; version: number }>(
       `/connections/${cid}/discover`, { method: "POST", baseVersion }),
-  setScope: (cid: string, tables: string[], baseVersion: number) =>
+  setScope: (cid: string, tables: string[], baseVersion: number, rowLimits?: Record<string, number>) =>
     req<{ ok: boolean; count: number; version: number }>(
-      `/connections/${cid}/scope`, { method: "POST", body: JSON.stringify({ tables }), baseVersion }),
+      `/connections/${cid}/scope`, {
+        method: "POST", body: JSON.stringify({ tables, row_limits: rowLimits ?? null }), baseVersion,
+      }),
+  countTableRows: (cid: string, schema_name: string, name: string) =>
+    req<{ ok: boolean; count?: number; cancelled?: boolean; error?: string }>(
+      `/connections/${cid}/tables/count`, { method: "POST", body: JSON.stringify({ schema_name, name }) }),
 
   // -- pipeline --
   launchRun: (connection_id: string, agents: string[] | null, baseVersion: number, tables?: string[] | null) =>
@@ -79,6 +92,7 @@ export const api = {
       method: "POST", body: JSON.stringify({ connection_id, agents, tables }), baseVersion,
     }),
   getRun: (id: string) => req<AgentRun>(`/runs/${id}`),
+  cancelRun: (id: string) => req<{ ok: boolean }>(`/runs/${id}/cancel`, { method: "POST" }),
 
   // -- catalog: tables --
   addDataset: (body: { schema_name: string; name: string; connection_id: string; comment?: string }, baseVersion: number) =>

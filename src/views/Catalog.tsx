@@ -2,14 +2,21 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Table2, Search, KeyRound, Lock, X, Check, Pencil,
   Sparkles, Hash, Calculator, ShieldCheck, Plus, Trash2,
-  IdCard, Wand2, Loader2, FileInput, Workflow, Layers, Split,
+  IdCard, Wand2, Loader2, FileInput, Workflow, Layers, Split, RefreshCw,
 } from "lucide-react";
 import { useCatalog, useScopedDatasets } from "../store";
-import { api } from "../api";
+import { api, type ColumnSuggestion, type TableSuggestion } from "../api";
 import {
-  EmptyState, QualityBar, semanticColor, confidenceColor, shortDs, Sparkbars,
+  EmptyState, QualityBar, semanticColor, confidenceColor, shortDs, Sparkbars, timeAgo,
 } from "../lib/ui";
-import type { Column, Dataset } from "../types";
+import { useConfirm } from "../components/ConfirmDialog";
+import type { CachedColumnSuggestion, Column, Dataset } from "../types";
+
+/** A doc is "protected" once a human has validated it or written it by hand —
+ * an LLM suggestion overwriting it needs the strongest confirmation. */
+function isProtectedDoc(doc: any): boolean {
+  return !!doc && (doc.status === "validated" || doc.source === "human");
+}
 
 export function Catalog() {
   const datasets = useScopedDatasets();
@@ -161,13 +168,26 @@ function AddTableHint() {
 function TableDetail({ ds, onSelectCol, selCol }: {
   ds: Dataset; onSelectCol: (c: Column) => void; selCol: Column | null;
 }) {
-  const { state, mutate, toast } = useCatalog();
+  const { state, health, mutate, toast } = useCatalog();
   const doc = state?.docs[ds.id];
+  const llmUp = health?.llm.up ?? false;
   const [editingMeta, setEditingMeta] = useState(false);
   const [metaDef, setMetaDef] = useState(doc?.definition ?? "");
   const [metaDomain, setMetaDomain] = useState(doc?.domain ?? "");
   const [addingCol, setAddingCol] = useState(false);
   const [newCol, setNewCol] = useState({ name: "", data_type: "VARCHAR", nullable: true });
+  const [autoDocOpen, setAutoDocOpen] = useState(false);
+
+  const provenance = useMemo(() => {
+    let validated = 0, suggested = 0, undocumented = 0;
+    for (const c of ds.columns) {
+      const cd = doc?.columns?.[c.name];
+      if (cd?.status === "validated") validated++;
+      else if (cd?.definition) suggested++;
+      else undocumented++;
+    }
+    return { validated, suggested, undocumented };
+  }, [ds.columns, doc?.columns]);
 
   const saveMeta = async () => {
     await mutate((v) => api.updateDatasetMeta(ds.id, { definition: metaDef, domain: metaDomain }, v));
@@ -220,7 +240,22 @@ function TableDetail({ ds, onSelectCol, selCol }: {
               <p className="mt-0.5 text-sm text-slate-500">
                 {doc?.definition || ds.comment || <span className="italic text-slate-400">No definition — run the Documenter agent or edit manually.</span>}
               </p>
+              <div className="mt-1.5 flex items-center gap-1.5">
+                {provenance.validated > 0 && (
+                  <span className="chip bg-emerald-500/10 text-emerald-500"><ShieldCheck size={10} /> {provenance.validated} validated</span>
+                )}
+                {provenance.suggested > 0 && (
+                  <span className="chip bg-slate-500/10 text-slate-400">{provenance.suggested} suggested</span>
+                )}
+                {provenance.undocumented > 0 && (
+                  <span className="chip bg-amber-500/10 text-amber-500">{provenance.undocumented} undocumented</span>
+                )}
+              </div>
             </div>
+            <button onClick={() => setAutoDocOpen(true)} disabled={!llmUp}
+              className="btn-outline !py-1 text-xs" title="Auto-document every column at once">
+              <Wand2 size={13} /> Auto-document table
+            </button>
             <button onClick={() => { setMetaDef(doc?.definition ?? ""); setMetaDomain(doc?.domain ?? ""); setEditingMeta(true); }}
               className="btn-ghost !p-1.5 text-slate-400"><Pencil size={14} /></button>
           </div>
@@ -298,18 +333,151 @@ function TableDetail({ ds, onSelectCol, selCol }: {
           </button>
         )}
       </div>
+      {autoDocOpen && <AutoDocModal ds={ds} doc={doc} onClose={() => setAutoDocOpen(false)} />}
+    </div>
+  );
+}
+
+// ---- Auto-document table (preview + apply, protects human-validated cols) - //
+function AutoDocModal({ ds, doc, onClose }: { ds: Dataset; doc: any; onClose: () => void }) {
+  const { mutate, refresh, toast } = useCatalog();
+  const { confirm, dialog } = useConfirm();
+  const [loading, setLoading] = useState(true);
+  const [regenerating, setRegenerating] = useState(false);
+  const [sugg, setSugg] = useState<TableSuggestion | null>(null);
+  const [cachedAt, setCachedAt] = useState<number | null>(null);
+  const [includeProtected, setIncludeProtected] = useState(false);
+  const [applying, setApplying] = useState(false);
+
+  const load = async (force: boolean) => {
+    const cached = doc?.llm_table_suggestion;
+    if (!force && cached) {
+      setSugg(cached); setCachedAt(cached.cached_at); setLoading(false);
+      return;
+    }
+    force ? setRegenerating(true) : setLoading(true);
+    try {
+      const r = await api.documentTable(ds.id);
+      setSugg(r.result); setCachedAt(null);
+      await refresh(); // pulls the newly cached result into state.docs
+    } catch (e) {
+      toast("err", (e as Error).message.includes("503") ? "Local LLM unavailable" : "Documentation failed");
+      if (!force) onClose();
+    } finally { setLoading(false); setRegenerating(false); }
+  };
+
+  useEffect(() => { load(false); }, [ds.id]); // eslint-disable-line
+
+  if (loading || !sugg) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
+        <div className="card flex items-center gap-2 p-6 text-sm text-slate-400">
+          <Loader2 className="animate-spin" /> {loading ? "Analysing every column…" : "No suggestion available."}
+        </div>
+      </div>
+    );
+  }
+
+  const protectedCols = sugg.columns.filter((c) => isProtectedDoc(doc?.columns?.[c.name]));
+  const openCols = sugg.columns.filter((c) => !isProtectedDoc(doc?.columns?.[c.name]));
+  const toApply = includeProtected ? sugg.columns : openCols;
+
+  const apply = async () => {
+    if (includeProtected && protectedCols.length > 0) {
+      const ok = await confirm({
+        title: "Overwrite human-validated columns?",
+        message: `${protectedCols.length} of the columns you're about to apply (${protectedCols.map((c) => c.name).join(", ")}) were already validated by a human. This will permanently replace those definitions.`,
+        tone: "danger", steps: 3, confirmLabel: "Overwrite",
+      });
+      if (!ok) return;
+    }
+    setApplying(true);
+    try {
+      const r = await mutate((v) => api.applyTable({
+        dataset_id: ds.id, table_definition: sugg.table_definition, domain: sugg.domain,
+        columns: toApply,
+      }, v));
+      if (r) toast("ok", `${ds.name} documented — ${toApply.length} column(s) updated ✓`);
+      onClose();
+    } finally { setApplying(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div className="w-full max-w-xl rounded-xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="mb-1 flex items-center gap-2">
+          <Wand2 size={18} className="text-loom-500" />
+          <h3 className="font-semibold">Auto-document — {ds.name}</h3>
+          <span className="chip bg-loom-500/10 text-loom-500">{sugg.domain}</span>
+          {cachedAt && <span className="chip bg-slate-500/10 text-slate-400">cached {timeAgo(cachedAt)} ago</span>}
+          <button onClick={() => load(true)} disabled={regenerating} className="btn-ghost ml-auto !p-1 text-slate-400" title="Regenerate">
+            {regenerating ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+          </button>
+          <button onClick={onClose} className="btn-ghost !p-1"><X size={16} /></button>
+        </div>
+        <p className="mb-3 text-sm text-slate-600 dark:text-slate-300">{sugg.table_definition}</p>
+
+        {protectedCols.length > 0 && (
+          <div className="mb-2 flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+            <ShieldCheck size={13} className="shrink-0" />
+            {protectedCols.length} column(s) are human-validated and will be <b>skipped</b> unless you opt in below.
+          </div>
+        )}
+
+        <div className="max-h-64 space-y-1 overflow-auto rounded-lg border border-slate-200 p-2 dark:border-slate-800">
+          {sugg.columns.map((c) => {
+            const protectedCol = isProtectedDoc(doc?.columns?.[c.name]);
+            const skipped = protectedCol && !includeProtected;
+            return (
+              <div key={c.name} className={`flex items-start gap-2 text-xs ${skipped ? "opacity-40" : ""}`}>
+                <span className="font-mono font-semibold shrink-0">{c.name}</span>
+                {protectedCol && <ShieldCheck size={11} className="mt-0.5 shrink-0 text-emerald-500" />}
+                {c.sensitivity === "PII" && <Lock size={10} className="mt-0.5 shrink-0 text-rose-400" />}
+                <span className="text-slate-500">{c.definition}</span>
+                <span className={`ml-auto shrink-0 font-mono ${confidenceColor(c.confidence)}`}>{c.confidence}%</span>
+              </div>
+            );
+          })}
+        </div>
+
+        {protectedCols.length > 0 && (
+          <label className="mt-2 flex items-center gap-2 text-xs text-slate-500">
+            <input type="checkbox" checked={includeProtected} onChange={(e) => setIncludeProtected(e.target.checked)} />
+            Also overwrite the {protectedCols.length} human-validated column(s)
+          </label>
+        )}
+
+        <div className="mt-3 flex gap-2">
+          <button onClick={apply} disabled={applying || toApply.length === 0} className="btn-primary flex-1 justify-center text-xs">
+            {applying ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+            Apply to {toApply.length} column{toApply.length === 1 ? "" : "s"}
+          </button>
+          <button onClick={onClose} className="btn-outline text-xs">Cancel</button>
+        </div>
+      </div>
+      {dialog}
     </div>
   );
 }
 
 // ---- Column panel --------------------------------------------------------- //
 function ColumnPanel({ ds, col, onClose }: { ds: Dataset; col: Column | null; onClose: () => void }) {
-  const { state, mutate, toast } = useCatalog();
+  const { state, health, mutate, refresh, toast } = useCatalog();
+  const { confirm, dialog } = useConfirm();
+  const llmUp = health?.llm.up ?? false;
   const [editing, setEditing] = useState(false);
   const [def, setDef] = useState("");
   const [calc, setCalc] = useState("");
   const [srcFile, setSrcFile] = useState("");
   const [srcField, setSrcField] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiSugg, setAiSugg] = useState<ColumnSuggestion | null>(null);
+
+  // switching columns: fall back to a previously cached suggestion, if any
+  useEffect(() => {
+    setAiSugg(state?.docs[ds.id]?.columns?.[col?.name ?? ""]?.llm_suggestion ?? null);
+  }, [col?.name, ds.id]); // eslint-disable-line
 
   if (!col) {
     return (
@@ -338,6 +506,46 @@ function ColumnPanel({ ds, col, onClose }: { ds: Dataset; col: Column | null; on
     toast("ok", status === "validated" ? "Validated ✓" : "Rejected");
   };
 
+  const cachedSuggestion = doc?.llm_suggestion;
+
+  const runSuggest = async (force = false) => {
+    if (!force && cachedSuggestion) { setAiSugg(cachedSuggestion); return; }
+    setAiLoading(true); setAiSugg(null);
+    try {
+      const r = await api.suggestColumn(ds.id, col.name);
+      setAiSugg(r.suggestion);
+      await refresh(); // pulls the newly cached suggestion into state.docs
+    } catch (e) {
+      toast("err", (e as Error).message.includes("503") ? "Local LLM unavailable" : "Suggestion failed");
+    } finally { setAiLoading(false); }
+  };
+
+  const acceptSuggestion = async () => {
+    if (!aiSugg) return;
+    if (isProtectedDoc(doc)) {
+      const ok = await confirm({
+        title: "Overwrite a validated definition?",
+        message: `"${col.name}" already has a human-validated definition: "${doc?.definition}". The AI suggestion would replace it with: "${aiSugg.definition}".`,
+        tone: "danger", steps: 3, confirmLabel: "Overwrite",
+      });
+      if (!ok) return;
+    } else if (doc?.definition) {
+      const ok = await confirm({
+        title: "Overwrite existing definition?",
+        message: `"${col.name}" already has a definition. The AI suggestion will replace it.`,
+        tone: "warning", steps: 1, confirmLabel: "Overwrite",
+      });
+      if (!ok) return;
+    }
+    await mutate((v) => api.applyColumn({
+      dataset_id: ds.id, column: col.name,
+      definition: aiSugg.definition, calculation: aiSugg.calculation,
+      sensitivity: aiSugg.sensitivity, status: "validated",
+    }, v));
+    toast("ok", `${col.name} documented ✓`);
+    setAiSugg(null);
+  };
+
   return (
     <div className="card flex min-h-0 flex-col overflow-hidden">
       <div className="flex items-center gap-2 border-b border-slate-200 p-3 dark:border-slate-800">
@@ -351,6 +559,44 @@ function ColumnPanel({ ds, col, onClose }: { ds: Dataset; col: Column | null; on
             <Sparkles size={12} /> Functional definition
             {doc?.source && <span className="ml-auto chip bg-slate-500/10 text-slate-400">{doc.source}</span>}
           </div>
+          {aiSugg && (
+            <div className="mb-2 rounded-xl border border-loom-500/30 bg-loom-500/5 p-3 animate-fade-in">
+              <div className="mb-1.5 flex items-center gap-2 text-sm font-semibold text-loom-600 dark:text-loom-300">
+                <Sparkles size={15} /> AI suggestion
+                {(aiSugg as CachedColumnSuggestion).cached_at && (
+                  <span className="chip bg-slate-500/10 text-slate-400">
+                    cached {timeAgo((aiSugg as CachedColumnSuggestion).cached_at)} ago
+                  </span>
+                )}
+                <span className={`ml-auto chip ${confidenceColor(aiSugg.confidence)} bg-current/10`}>conf. {aiSugg.confidence}%</span>
+              </div>
+              <p className="text-sm text-slate-700 dark:text-slate-200">{aiSugg.definition}</p>
+              {aiSugg.calculation && (
+                <div className="mt-1.5 rounded bg-white/60 p-1.5 font-mono text-xs text-slate-600 dark:bg-slate-900/50 dark:text-slate-300">
+                  {aiSugg.calculation}
+                </div>
+              )}
+              {aiSugg.evidence.length > 0 && (
+                <div className="mt-2 border-t border-loom-500/15 pt-2">
+                  <div className="mb-1 text-[10px] font-semibold uppercase text-slate-400">Grounded in</div>
+                  <ul className="space-y-0.5">
+                    {aiSugg.evidence.map((e, i) => (
+                      <li key={i} className="flex items-start gap-1.5 text-[11px] text-slate-500">
+                        <Check size={11} className="mt-0.5 shrink-0 text-emerald-500" /> {e}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <div className="mt-2.5 flex gap-2">
+                <button onClick={acceptSuggestion} className="btn-primary flex-1 justify-center text-xs"><Check size={13} /> Accept</button>
+                <button onClick={() => runSuggest(true)} disabled={!llmUp || aiLoading} className="btn-outline text-xs">
+                  {aiLoading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Regenerate
+                </button>
+                <button onClick={() => setAiSugg(null)} className="btn-outline text-xs">Discard</button>
+              </div>
+            </div>
+          )}
           {editing ? (
             <div className="space-y-2">
               <textarea className="input min-h-[60px]" value={def} onChange={(e) => setDef(e.target.value)}
@@ -390,6 +636,12 @@ function ColumnPanel({ ds, col, onClose }: { ds: Dataset; col: Column | null; on
               )}
               <div className="flex items-center gap-2 flex-wrap">
                 <button onClick={startEdit} className="btn-outline text-xs"><Pencil size={12} /> Edit</button>
+                {!aiSugg && (
+                  <button onClick={() => runSuggest()} disabled={!llmUp || aiLoading} className="btn-outline text-xs">
+                    {aiLoading ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                    {cachedSuggestion ? "Show AI suggestion" : "AI suggest"}
+                  </button>
+                )}
                 {doc?.status !== "validated" && (
                   <button onClick={() => setStatus("validated")} className="btn-ghost text-xs text-emerald-500">
                     <ShieldCheck size={13} /> Validate
@@ -465,6 +717,7 @@ function ColumnPanel({ ds, col, onClose }: { ds: Dataset; col: Column | null; on
           </section>
         )}
       </div>
+      {dialog}
     </div>
   );
 }
@@ -595,7 +848,7 @@ function TableIdentity({ ds }: { ds: Dataset }) {
         </div>
       )}
 
-      {mapOpen && <MappingModal ds={ds} onClose={() => setMapOpen(false)} />}
+      {mapOpen && <MappingModal ds={ds} doc={doc} onClose={() => setMapOpen(false)} />}
     </div>
   );
 }
@@ -615,29 +868,36 @@ const MAP_ROLES = [
   ["source_column", "Source field"], ["transformation", "Transformation"],
 ] as const;
 
-function MappingModal({ ds, onClose }: { ds: Dataset; onClose: () => void }) {
-  const { mutate, toast } = useCatalog();
+function MappingModal({ ds, doc, onClose }: { ds: Dataset; doc: any; onClose: () => void }) {
+  const { mutate, refresh, toast } = useCatalog();
   const [loading, setLoading] = useState(true);
+  const [regenerating, setRegenerating] = useState(false);
   const [cols, setCols] = useState<string[]>([]);
   const [roles, setRoles] = useState<Record<string, string | null>>({});
   const [confidence, setConfidence] = useState(0);
+  const [cachedAt, setCachedAt] = useState<number | null>(null);
   const [applying, setApplying] = useState(false);
 
-  // detect role columns on mount
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const r = await api.mappingDetect(ds.id);
-        if (!alive) return;
-        setCols(r.columns); setRoles(r.roles); setConfidence(r.confidence);
-      } catch (e) {
-        toast("err", (e as Error).message.includes("503") ? "Local LLM unavailable" : "Detection failed");
-        onClose();
-      } finally { if (alive) setLoading(false); }
-    })();
-    return () => { alive = false; };
-  }, [ds.id]); // eslint-disable-line
+  const load = async (force: boolean) => {
+    const cached = doc?.llm_mapping_detection;
+    if (!force && cached) {
+      setCols(cached.columns); setRoles(cached.roles); setConfidence(cached.confidence);
+      setCachedAt(cached.cached_at); setLoading(false);
+      return;
+    }
+    force ? setRegenerating(true) : setLoading(true);
+    try {
+      const r = await api.mappingDetect(ds.id);
+      setCols(r.columns); setRoles(r.roles); setConfidence(r.confidence); setCachedAt(null);
+      await refresh(); // pulls the newly cached detection into state.docs
+    } catch (e) {
+      toast("err", (e as Error).message.includes("503") ? "Local LLM unavailable" : "Detection failed");
+      if (!force) onClose();
+    } finally { setLoading(false); setRegenerating(false); }
+  };
+
+  // detect role columns on mount (or reuse the cached detection)
+  useEffect(() => { load(false); }, [ds.id]); // eslint-disable-line
 
   const apply = async () => {
     setApplying(true);
@@ -655,7 +915,11 @@ function MappingModal({ ds, onClose }: { ds: Dataset; onClose: () => void }) {
         <div className="mb-1 flex items-center gap-2">
           <Workflow size={18} className="text-violet-500" />
           <h3 className="font-semibold">ETL mapping — {ds.name}</h3>
-          <button onClick={onClose} className="btn-ghost ml-auto !p-1"><X size={16} /></button>
+          {cachedAt && <span className="chip bg-slate-500/10 text-slate-400">cached {timeAgo(cachedAt)} ago</span>}
+          <button onClick={() => load(true)} disabled={regenerating || loading} className="btn-ghost ml-auto !p-1 text-slate-400" title="Regenerate">
+            {regenerating ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+          </button>
+          <button onClick={onClose} className="btn-ghost !p-1"><X size={16} /></button>
         </div>
         {loading ? (
           <div className="grid place-items-center py-10 text-slate-400">
