@@ -271,6 +271,11 @@ export const api = {
       method: "POST", body: JSON.stringify({ username, password }),
     }),
   logout: () => req<{ ok: boolean }>("/auth/logout", { method: "POST" }),
+  requestAdminReset: () => req<{ ok: boolean; message: string }>("/auth/request-reset", { method: "POST" }),
+  confirmAdminReset: (code: string, username: string, password: string) =>
+    req<{ token: string; user: User }>("/auth/confirm-reset", {
+      method: "POST", body: JSON.stringify({ code, username, password }),
+    }),
   me: () => req<{ user: User }>("/auth/me"),
 
   // -- users (admin) --
