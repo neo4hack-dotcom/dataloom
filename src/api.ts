@@ -1,6 +1,6 @@
 import type {
   AgentRun, AlertSettings, CatalogState, ColumnLineageEdge, Connection, ConnectorSettings, DiscoveredTable, Domain, Health,
-  LlmConfig, LlmTest, McpConfig, Owner, QueryLogEntry, SearchHit, User,
+  LlmConfig, LlmTest, McpConfig, McpMappingTable, McpTool, Owner, QualityRun, QualityThresholds, QueryLogEntry, SearchHit, User,
 } from "./types";
 
 export class VersionConflict extends Error {
@@ -73,6 +73,14 @@ export const api = {
   }),
   pingConnection: (id: string) => req<{ ok: boolean }>(`/connections/${id}/ping`, { method: "POST" }),
 
+  // -- MCP source: discover tools + LLM-assisted table/column mapping --
+  mcpDiscoverMapping: (cid: string) =>
+    req<{ ok: boolean; tool_count: number; tools: McpTool[]; mapping: { tables: McpMappingTable[] } }>(
+      `/connections/${cid}/mcp/discover-mapping`, { method: "POST" }),
+  mcpApplyMapping: (cid: string, tables: McpMappingTable[], baseVersion: number) =>
+    req<{ ok: boolean; connection: Connection; version: number }>(
+      `/connections/${cid}/mcp/mapping`, { method: "POST", body: JSON.stringify({ tables }), baseVersion }),
+
   // -- discovery & scope (big-volume sources) --
   discover: (cid: string, baseVersion: number) =>
     req<{ ok: boolean; count: number; tables: DiscoveredTable[]; version: number }>(
@@ -93,6 +101,19 @@ export const api = {
     }),
   getRun: (id: string) => req<AgentRun>(`/runs/${id}`),
   cancelRun: (id: string) => req<{ ok: boolean }>(`/runs/${id}/cancel`, { method: "POST" }),
+
+  // -- data quality checks --
+  launchQualityRun: (
+    body: { connection_id: string; scope: Record<string, string[] | null>;
+           thresholds?: Partial<QualityThresholds>; focus_notes?: string },
+    baseVersion: number
+  ) => req<{ run: QualityRun; version: number }>("/quality-checks/runs", {
+    method: "POST", body: JSON.stringify(body), baseVersion,
+  }),
+  listQualityRuns: () => req<{ runs: Omit<QualityRun, "tables" | "logs">[] }>("/quality-checks/runs"),
+  getQualityRun: (id: string) => req<QualityRun>(`/quality-checks/runs/${id}`),
+  cancelQualityRun: (id: string) => req<{ ok: boolean }>(`/quality-checks/runs/${id}/cancel`, { method: "POST" }),
+  deleteQualityRun: (id: string) => req<{ ok: boolean }>(`/quality-checks/runs/${id}`, { method: "DELETE" }),
 
   // -- catalog: tables --
   addDataset: (body: { schema_name: string; name: string; connection_id: string; comment?: string }, baseVersion: number) =>

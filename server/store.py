@@ -41,6 +41,7 @@ _DEFAULT: dict[str, Any] = {
     "admin_reset": {"code": None, "expires_at": None},
     "domains": [],
     "column_lineage": [],
+    "quality_runs": [],
     "settings": {
         "theme": "dark",
         "llm": {
@@ -205,6 +206,7 @@ class Store:
             self._db["runs"] = []
             self._db["domains"] = []
             self._db["column_lineage"] = []
+            self._db["quality_runs"] = []
             self._bump("catalog.reset", "")
 
     # -- backup / restore ---------------------------------------------------- #
@@ -274,9 +276,15 @@ class Store:
             return conn
 
     def delete_connection(self, cid: str):
+        """Deletes the connection and every dataset it produced, plus every
+        doc/relationship/lineage/QA/glossary reference to those datasets —
+        so removing a mockup (Demo) source never leaves stray catalog data
+        behind to mix with what real sources contributed."""
         with self._lock:
             self._db["connections"] = [c for c in self._db["connections"] if c["id"] != cid]
+            ds_ids = {d["id"] for d in self._db["datasets"] if d["connection_id"] == cid}
             self._db["datasets"] = [d for d in self._db["datasets"] if d["connection_id"] != cid]
+            self._purge_dataset_refs(ds_ids)
             self._bump("connection.delete", cid)
 
     # -- discovery & scope (big-volume sources) ------------------------------ #
@@ -344,18 +352,34 @@ class Store:
             self._bump("dataset.add", ds_id)
             return dataset
 
+    def _purge_dataset_refs(self, ds_ids: set[str]):
+        """Remove every trace of the given dataset ids from every collection
+        that references them by id. Shared by delete_dataset and
+        delete_connection so a deleted source — mockup or real — never
+        leaves orphaned docs/relationships/QA issues/glossary refs behind to
+        pollute search or mix with data from other sources."""
+        for ds_id in ds_ids:
+            self._db["docs"].pop(ds_id, None)
+        self._db["relationships"] = [
+            r for r in self._db["relationships"]
+            if r["child"]["dataset_id"] not in ds_ids and r["parent"]["dataset_id"] not in ds_ids]
+        self._db["lineage"] = [
+            e for e in self._db["lineage"] if e["from"] not in ds_ids and e["to"] not in ds_ids]
+        self._db["column_lineage"] = [
+            e for e in self._db["column_lineage"]
+            if e["from"]["dataset_id"] not in ds_ids and e["to"]["dataset_id"] not in ds_ids]
+        self._db["qa_issues"] = [i for i in self._db["qa_issues"] if i.get("dataset_id") not in ds_ids]
+        self._db["matches"] = [
+            m for m in self._db["matches"]
+            if m["a"]["dataset_id"] not in ds_ids and m["b"]["dataset_id"] not in ds_ids]
+        for term in self._db["glossary"]:
+            term["columns"] = [c for c in term.get("columns", []) if c.get("dataset_id") not in ds_ids]
+        self._db["glossary"] = [t for t in self._db["glossary"] if t.get("columns")]
+
     def delete_dataset(self, ds_id: str):
         with self._lock:
             self._db["datasets"] = [d for d in self._db["datasets"] if d["id"] != ds_id]
-            self._db["docs"].pop(ds_id, None)
-            self._db["relationships"] = [
-                r for r in self._db["relationships"]
-                if r["child"]["dataset_id"] != ds_id and r["parent"]["dataset_id"] != ds_id]
-            self._db["lineage"] = [
-                e for e in self._db["lineage"] if e["from"] != ds_id and e["to"] != ds_id]
-            self._db["column_lineage"] = [
-                e for e in self._db["column_lineage"]
-                if e["from"]["dataset_id"] != ds_id and e["to"]["dataset_id"] != ds_id]
+            self._purge_dataset_refs({ds_id})
             self._bump("dataset.delete", ds_id)
 
     def datasets(self) -> list[dict[str, Any]]:
@@ -807,6 +831,63 @@ class Store:
         return next((r for r in self._db["runs"] if r["id"] == run_id), None)
 
     def runs(self): return self._db["runs"]
+
+    # -- data quality check runs (deep profiling + LLM anomaly analysis) ----- #
+    def create_quality_run(self, connection_id: str, scope: dict[str, Any],
+                           thresholds: dict[str, Any], focus_notes: str) -> dict[str, Any]:
+        with self._lock:
+            run = {
+                "id": f"qcr_{int(time.time()*1000)}", "connection_id": connection_id,
+                "scope": scope, "thresholds": thresholds, "focus_notes": focus_notes,
+                "status": "queued", "progress": 0.0, "phase": None, "logs": [],
+                "created_at": time.time(), "plan": None, "tables": [], "cancel_requested": False,
+            }
+            self._db["quality_runs"].insert(0, run)
+            self._db["quality_runs"] = self._db["quality_runs"][:30]
+            self._bump("quality_run.create", run["id"])
+            return run
+
+    def update_quality_run(self, run_id: str, patch: dict[str, Any]):
+        with self._lock:
+            for r in self._db["quality_runs"]:
+                if r["id"] == run_id:
+                    r.update(patch)
+                    break
+            self._flush()
+
+    def append_quality_run_log(self, run_id: str, entry: dict[str, Any]):
+        with self._lock:
+            for r in self._db["quality_runs"]:
+                if r["id"] == run_id:
+                    r["logs"].append(entry)
+                    r["logs"] = r["logs"][-400:]
+                    break
+            self._flush()
+
+    def get_quality_run(self, run_id: str) -> dict[str, Any] | None:
+        return next((r for r in self._db["quality_runs"] if r["id"] == run_id), None)
+
+    def quality_runs(self): return self._db["quality_runs"]
+
+    def request_quality_run_cancel(self, run_id: str) -> bool:
+        with self._lock:
+            for r in self._db["quality_runs"]:
+                if r["id"] == run_id:
+                    if r["status"] not in ("queued", "running"):
+                        return False
+                    r["cancel_requested"] = True
+                    self._flush()
+                    return True
+            return False
+
+    def is_quality_run_cancel_requested(self, run_id: str) -> bool:
+        r = self.get_quality_run(run_id)
+        return bool(r and r.get("cancel_requested"))
+
+    def delete_quality_run(self, run_id: str):
+        with self._lock:
+            self._db["quality_runs"] = [r for r in self._db["quality_runs"] if r["id"] != run_id]
+            self._bump("quality_run.delete", run_id)
 
     # -- settings ------------------------------------------------------------ #
     def update_settings(self, patch: dict[str, Any]):
