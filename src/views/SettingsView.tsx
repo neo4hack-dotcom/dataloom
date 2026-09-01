@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import {
   Cpu, Download, FileJson, FileText, History, Check, Server,
   Table2, AppWindow, Package, RotateCcw, AlertTriangle, Upload, Link2,
-  RefreshCw, Zap, Loader2, Gauge, Save, DatabaseBackup, FileUp,
+  RefreshCw, Zap, Loader2, Gauge, Save, DatabaseBackup, FileUp, ShieldCheck,
 } from "lucide-react";
 import { useCatalog } from "../store";
+import { useAuth } from "../auth";
 import { api } from "../api";
 import { timeAgo } from "../lib/ui";
 
@@ -14,7 +15,23 @@ type ExportTarget = "catalog" | "app" | "full";
 
 export function SettingsView() {
   const { state, health, refresh, mutate, toast } = useCatalog();
+  const { user } = useAuth();
   const [resetConfirm, setResetConfirm] = useState(false);
+
+  // -- connector settings (admin only) --
+  const [rowLimit, setRowLimit] = useState(100);
+  const [rowLimitBusy, setRowLimitBusy] = useState(false);
+  useEffect(() => {
+    if (state?.settings.connectors) setRowLimit(state.settings.connectors.row_fetch_limit);
+  }, [state?.settings.connectors]);
+
+  const saveRowLimit = async () => {
+    setRowLimitBusy(true);
+    try {
+      await mutate((v) => api.updateConnectorSettings({ row_fetch_limit: rowLimit }, v));
+      toast("ok", "Row fetch limit saved");
+    } finally { setRowLimitBusy(false); }
+  };
 
   // -- LLM configuration (OpenAI-compatible) --
   const cfg = health?.llm.config;
@@ -220,6 +237,29 @@ export function SettingsView() {
           </div>
         </div>
       </div>
+
+      {/* Connector settings — admin only */}
+      {user?.role === "admin" && (
+        <div className="card p-5">
+          <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
+            <ShieldCheck size={16} className="text-loom-500" /> Connector settings
+            <span className="text-xs font-normal text-slate-400">— admin only</span>
+          </div>
+          <p className="mb-3 text-xs text-slate-400">
+            Caps how many rows profiling, ETL-mapping and MCP tool calls fetch per query.
+          </p>
+          <div className="flex items-end gap-3">
+            <label className="text-xs font-medium text-slate-500">
+              Row fetch limit
+              <input type="number" min={1} className="input mt-1 w-32" value={rowLimit}
+                onChange={(e) => setRowLimit(Math.max(1, Number(e.target.value) || 1))} />
+            </label>
+            <button onClick={saveRowLimit} disabled={rowLimitBusy} className="btn-primary">
+              {rowLimitBusy ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} Save
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* OKF Import */}
       <div className="card p-5">

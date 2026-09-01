@@ -1,8 +1,10 @@
-fastapi==0.115.6
+fastapi==0.141.1
 uvicorn[standard]==0.34.0
-pydantic==2.10.4
+pydantic==2.13.5
 httpx==0.28.1
 aiofiles==24.1.0
+mcp==1.29.1
+bcrypt==5.0.0
 # Optional warehouse drivers — installed only if you connect real sources.
 # The app runs fully in Demo mode without them.
 # oracledb==2.5.1

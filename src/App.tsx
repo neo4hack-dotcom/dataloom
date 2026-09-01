@@ -3,11 +3,14 @@ import type { ReactNode } from "react";
 import {
   LayoutDashboard, Database, Table2, GitCompare, Workflow, Bot, Tags,
   Search, Settings as SettingsIcon, Command, Moon, Sun, Sparkles, Cpu,
-  CircleDot, Link2, Compass, Library as LibraryIcon, ListChecks,
+  CircleDot, Link2, Compass, Library as LibraryIcon, ListChecks, Activity,
+  Plug, Users as UsersIcon, LogOut,
 } from "lucide-react";
 import { CatalogProvider, useCatalog } from "./store";
+import { AuthProvider, useAuth } from "./auth";
 import { CommandPalette } from "./components/CommandPalette";
 import { Toaster } from "./components/Toaster";
+import { Login } from "./views/Login";
 import { Overview } from "./views/Overview";
 import { Connections } from "./views/Connections";
 import { Sources } from "./views/Sources";
@@ -20,12 +23,15 @@ import { Agents } from "./views/Agents";
 import { Glossary } from "./views/Glossary";
 import { SearchView } from "./views/SearchView";
 import { SettingsView } from "./views/SettingsView";
+import { QueryLog } from "./views/QueryLog";
+import { McpSettings } from "./views/admin/McpSettings";
+import { Users } from "./views/admin/Users";
 
 export type Tab =
   | "overview" | "library" | "connections" | "sources" | "catalog" | "explorer" | "relationships"
-  | "lineage" | "agents" | "glossary" | "search" | "settings";
+  | "lineage" | "agents" | "glossary" | "search" | "settings" | "queries" | "mcp" | "users";
 
-const TABS: { id: Tab; label: string; icon: typeof Database; group?: string }[] = [
+const TABS: { id: Tab; label: string; icon: typeof Database; group?: string; adminOnly?: boolean }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "library", label: "Library", icon: LibraryIcon },
   { id: "connections", label: "Connections", icon: Database, group: "Build" },
@@ -37,6 +43,9 @@ const TABS: { id: Tab; label: string; icon: typeof Database; group?: string }[] 
   { id: "agents", label: "Agents", icon: Bot },
   { id: "glossary", label: "Glossary", icon: Tags },
   { id: "search", label: "Search", icon: Search },
+  { id: "queries", label: "Query Log", icon: Activity, group: "Monitor" },
+  { id: "mcp", label: "MCP", icon: Plug, group: "Admin", adminOnly: true },
+  { id: "users", label: "Users", icon: UsersIcon, adminOnly: true },
   { id: "settings", label: "Settings", icon: SettingsIcon },
 ];
 
@@ -45,6 +54,11 @@ function Shell() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [dark, setDark] = useState(true);
   const { state, health, loading, activeRun, activeConn, setActiveConn } = useCatalog();
+  const { user, logout } = useAuth();
+  const visibleTabs = useMemo(
+    () => TABS.filter((t) => !t.adminOnly || user?.role === "admin"),
+    [user]
+  );
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -84,7 +98,7 @@ function Shell() {
         </div>
 
         <nav className="flex-1 space-y-0.5 overflow-y-auto px-2 py-2">
-          {TABS.map((t) => {
+          {visibleTabs.map((t) => {
             const Icon = t.icon;
             const active = tab === t.id;
             const badge =
@@ -139,6 +153,14 @@ function Shell() {
               {dark ? <Sun size={15} /> : <Moon size={15} />}
             </button>
           </div>
+          <div className="flex items-center justify-between px-1">
+            <span className="truncate text-xs text-slate-500" title={user?.username}>
+              {user?.username} {user?.role === "admin" && "· admin"}
+            </span>
+            <button onClick={logout} title="Log out" className="btn-ghost !p-1.5">
+              <LogOut size={14} />
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -191,6 +213,9 @@ function Shell() {
               {tab === "agents" && <Agents />}
               {tab === "glossary" && <Glossary />}
               {tab === "search" && <SearchView />}
+              {tab === "queries" && <QueryLog />}
+              {tab === "mcp" && user?.role === "admin" && <McpSettings />}
+              {tab === "users" && user?.role === "admin" && <Users />}
               {tab === "settings" && <SettingsView />}
             </div>
           )}
@@ -219,12 +244,29 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { err: Error | nu
   }
 }
 
+function Gate() {
+  const { user, loading } = useAuth();
+  if (loading) {
+    return (
+      <div className="grid h-screen place-items-center text-slate-400">
+        <div className="flex items-center gap-2"><Sparkles className="animate-pulse" /> Loading…</div>
+      </div>
+    );
+  }
+  if (!user) return <Login />;
+  return (
+    <CatalogProvider>
+      <Shell />
+    </CatalogProvider>
+  );
+}
+
 export default function App() {
   return (
     <ErrorBoundary>
-      <CatalogProvider>
-        <Shell />
-      </CatalogProvider>
+      <AuthProvider>
+        <Gate />
+      </AuthProvider>
     </ErrorBoundary>
   );
 }
