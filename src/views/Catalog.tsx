@@ -308,6 +308,8 @@ function ColumnPanel({ ds, col, onClose }: { ds: Dataset; col: Column | null; on
   const [editing, setEditing] = useState(false);
   const [def, setDef] = useState("");
   const [calc, setCalc] = useState("");
+  const [srcFile, setSrcFile] = useState("");
+  const [srcField, setSrcField] = useState("");
 
   if (!col) {
     return (
@@ -319,9 +321,6 @@ function ColumnPanel({ ds, col, onClose }: { ds: Dataset; col: Column | null; on
 
   const doc = state?.docs[ds.id]?.columns?.[col.name];
   const p = col.profile;
-
-  const [srcFile, setSrcFile] = useState("");
-  const [srcField, setSrcField] = useState("");
   const startEdit = () => {
     setDef(doc?.definition ?? ""); setCalc(doc?.calculation ?? "");
     setSrcFile(doc?.source_file ?? ""); setSrcField(doc?.source_field ?? "");
