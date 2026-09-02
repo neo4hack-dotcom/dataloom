@@ -34,7 +34,7 @@ On the demo source, DOINg.Catalogue finds **on its own**:
 ## 🗂️ The two ways to use it
 
 **Build the catalogue** (data team): Connections → MCP Library → Sources & scope → Catalog → Explorer →
-Relationships → Lineage → Catalog Graph → Agents → Data Quality Checks.
+Relationships → Lineage → Catalog Graph → AI Enrichment Center → Agents → Data Quality Checks.
 **Consume the catalogue** (everyone): the **Library** — browse your data in plain language and ask the **Librarian** chatbot.
 
 ## 🧠 Feature tour
@@ -57,7 +57,8 @@ Relationships → Lineage → Catalog Graph → Agents → Data Quality Checks.
 3. **Catalog Copilot** — conversational RAG over the catalogue, cites real columns.
 4. **Next Best Action** — impact-ranked worklist of the gaps to close first.
 5. **Explain relationship** — plain-business meaning + cardinality of an inferred link.
-6. **Data Quality Checks** (independent module) — pick a source and tables, and an adaptive local-LLM agent plans, runs and refines statistical checks (outliers, format breaks, duplicates, categorical rarity) across multiple passes, explains what it finds in plain language, and exports a professional PDF report.
+6. **Data Quality Checks** (independent module) — pick a source and tables, and an adaptive local-LLM agent plans, runs and refines a wide range of statistical checks across multiple passes: numeric outliers, categorical rarity, format-pattern breaks, duplicate rows, cross-column consistency (impossible date ordering, business-rule gaps), temporal drift (gaps/spikes over time), multivariate outliers (a dependency-free, pure-Python approximation of Mahalanobis-distance detection for column pairs), and LLM semantic anomaly scans on sampled values. When a finding is genuinely ambiguous, the agent **pauses once and asks a targeted question** — answer it inline, or leave it and the run continues on its own after a timeout. Exports a professional PDF report — executive summary, Data Health Score, severity matrix, and recommendations — matching the app's branding.
+7. **AI Enrichment Center** — every local-LLM enrichment action (auto-document, identity card & synthesis, ETL mapping detection, explain relationship, map an MCP source) listed in one place by menu, launchable individually, per category, or all-pending-at-once, sequentially so a single local LLM stays responsive. Pending vs. already-enriched status persists across reloads and restarts.
 
 ### Governance
 Tags, hierarchical domains, ownership, deprecation, usage/popularity, custom properties, and column-level
@@ -77,6 +78,7 @@ lineage / Impact Analysis — the DataHub-style layer on top of the profiling en
 ### Import / export
 - **OKF / Frictionless Data**: import a `datapackage.json` (URL or paste) — schemas, field descriptions and declared foreign keys; **export** the catalogue back to `datapackage.json`.
 - Export the dictionary as **Markdown handbook**, **JSON**, or **OKF**; export app config separately.
+- **Catalog PDF export**: from the Catalog view, pick one or more sources and which of their tables to include, and export a single branded PDF — per table: definition, synthesis, domain, tags, owners, and a full column table (type, semantic type, definition, quality score, PII flag).
 
 ### Everything is editable
 Manual CRUD on tables, columns, relationships, lineage edges, glossary terms and QA issues — enrich or correct anything the engine produced (subject to your role).
@@ -125,7 +127,7 @@ Then fill in the DSN / host in **Connections**. All queries are read-only.
 ```
 Frontend  React 19 · TS 5.8 strict · Tailwind 3.4 (dark) · Vite 6 · pure-SVG charts & graphs
           src/App.tsx (tabs) · store.tsx (state + optimistic concurrency + notifications)
-          auth.tsx (session/role) · views/* · lib/ui.tsx · lib/graphLayout.ts · lib/useZoomPan.ts
+          auth.tsx (session/role) · views/* · lib/ui.tsx · lib/graphLayout.ts · lib/useZoomPan.ts · lib/pdfExport.ts
 Backend   FastAPI · Uvicorn :3001 · db.json persistence (single-writer, RLock-guarded)
           auth.py               (bcrypt, sessions, roles: admin / member / viewer)
           store.py               (all CRUD + notifications, one RLock-guarded JSON file)

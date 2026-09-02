@@ -338,7 +338,7 @@ export interface QualityRun {
   scope: Record<string, string[] | null>;
   thresholds: QualityThresholds;
   focus_notes: string;
-  status: "queued" | "running" | "done" | "error" | "cancelled";
+  status: "queued" | "running" | "waiting_input" | "done" | "error" | "cancelled";
   progress: number;
   phase: "planning" | "checking" | "refining" | "interpreting" | "done" | null;
   logs: QualityRunLog[];
@@ -348,6 +348,8 @@ export interface QualityRun {
   plan: QualityPlan | null;
   tables: QualityTableResult[];
   cancel_requested: boolean;
+  pending_question?: string | null;
+  question_answer?: string | null;
   error?: string;
 }
 

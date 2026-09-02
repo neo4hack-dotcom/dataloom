@@ -130,6 +130,8 @@ export const api = {
   listQualityRuns: () => req<{ runs: Omit<QualityRun, "tables" | "logs">[] }>("/quality-checks/runs"),
   getQualityRun: (id: string) => req<QualityRun>(`/quality-checks/runs/${id}`),
   cancelQualityRun: (id: string) => req<{ ok: boolean }>(`/quality-checks/runs/${id}/cancel`, { method: "POST" }),
+  answerQualityRun: (id: string, answer: string) =>
+    req<{ ok: boolean }>(`/quality-checks/runs/${id}/answer`, { method: "POST", body: JSON.stringify({ answer }) }),
   deleteQualityRun: (id: string) => req<{ ok: boolean }>(`/quality-checks/runs/${id}`, { method: "DELETE" }),
 
   // -- catalog: tables --

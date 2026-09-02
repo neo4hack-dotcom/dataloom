@@ -5,6 +5,7 @@ import {
   IdCard, Wand2, Loader2, FileInput, Workflow, Layers, Split, RefreshCw,
   LayoutDashboard, Columns3, GitCompare, ShieldAlert, Settings2, BookOpen,
   Tag as TagIcon, UserPlus, AlertTriangle, EyeOff, Eye, ArrowRight, Users,
+  FileDown, Database, ChevronDown, ChevronRight,
 } from "lucide-react";
 import { useCatalog, useScopedDatasets } from "../store";
 import { api, type ColumnSuggestion, type TableSuggestion } from "../api";
@@ -14,6 +15,7 @@ import {
 } from "../lib/ui";
 import { computeDatasetHealth } from "../lib/health";
 import { useConfirm } from "../components/ConfirmDialog";
+import { renderHtmlToPDF, escHtml, reportHeader, reportFooter, REPORT_FONT } from "../lib/pdfExport";
 import type { CachedColumnSuggestion, Column, Dataset } from "../types";
 import type { Tab } from "../App";
 
@@ -29,6 +31,7 @@ export function Catalog({ goto }: { goto?: (t: Tab) => void }) {
   const [q, setQ] = useState("");
   const [selDs, setSelDs] = useState<string | null>(null);
   const [selCol, setSelCol] = useState<Column | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
 
   // Search / Command Palette / Impact Analysis can drill straight into a table (+column)
   useEffect(() => {
@@ -62,10 +65,15 @@ export function Catalog({ goto }: { goto?: (t: Tab) => void }) {
       {/* table list */}
       <div className="card flex flex-col overflow-hidden">
         <div className="border-b border-slate-200 p-2.5 dark:border-slate-800">
-          <div className="relative">
-            <Search size={14} className="absolute left-2.5 top-2.5 text-slate-400" />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter…"
-              className="input !py-1.5 !pl-8 text-xs" />
+          <div className="flex items-center gap-1.5">
+            <div className="relative flex-1">
+              <Search size={14} className="absolute left-2.5 top-2.5 text-slate-400" />
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter…"
+                className="input !py-1.5 !pl-8 text-xs" />
+            </div>
+            <button onClick={() => setExportOpen(true)} className="btn-outline shrink-0 !p-1.5" title="Export catalog to PDF">
+              <FileDown size={15} />
+            </button>
           </div>
         </div>
         <div className="flex-1 overflow-auto p-1.5">
@@ -88,8 +96,211 @@ export function Catalog({ goto }: { goto?: (t: Tab) => void }) {
           <ColumnPanel ds={active} col={selCol} onClose={() => setSelCol(null)} />
         </div>
       ) : null}
+      {exportOpen && <CatalogExportModal onClose={() => setExportOpen(false)} />}
     </div>
   );
+}
+
+// ---- Catalog PDF export: pick connections/tables, render a branded report -- //
+function CatalogExportModal({ onClose }: { onClose: () => void }) {
+  const { state, toast } = useCatalog();
+  const conns = state?.connections ?? [];
+  const allDatasets = state?.datasets ?? [];
+  const [expanded, setExpanded] = useState<Set<string>>(new Set(conns.map((c) => c.id)));
+  const [selected, setSelected] = useState<Set<string>>(new Set(allDatasets.map((d) => d.id)));
+  const [exporting, setExporting] = useState(false);
+
+  const datasetsOf = (cid: string) => allDatasets.filter((d) => d.connection_id === cid);
+
+  const toggleExpand = (cid: string) => setExpanded((s) => {
+    const n = new Set(s); if (n.has(cid)) n.delete(cid); else n.add(cid); return n;
+  });
+  const toggleDataset = (id: string) => setSelected((s) => {
+    const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n;
+  });
+  const toggleConn = (cid: string) => {
+    const ids = datasetsOf(cid).map((d) => d.id);
+    const allOn = ids.every((id) => selected.has(id));
+    setSelected((s) => {
+      const n = new Set(s);
+      ids.forEach((id) => allOn ? n.delete(id) : n.add(id));
+      return n;
+    });
+  };
+
+  const exportPDF = async () => {
+    const dsList = allDatasets.filter((d) => selected.has(d.id));
+    if (dsList.length === 0) { toast("err", "Select at least one table"); return; }
+    setExporting(true);
+    try {
+      const dateStr = new Date().toISOString().slice(0, 10);
+      await renderHtmlToPDF(buildCatalogReportHTML(dsList, state!.docs, conns), `catalog-export-${dateStr}.pdf`);
+      toast("ok", "Catalog PDF exported ✓");
+      onClose();
+    } catch (e) {
+      toast("err", `PDF export failed: ${(e as Error).message}`);
+    } finally { setExporting(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div className="flex max-h-[85vh] w-full max-w-lg flex-col rounded-xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="mb-1 flex items-center gap-2">
+          <FileDown size={18} className="text-loom-500" />
+          <h3 className="font-semibold">Export catalog to PDF</h3>
+          <button onClick={onClose} className="btn-ghost ml-auto !p-1"><X size={16} /></button>
+        </div>
+        <p className="mb-3 text-xs text-slate-400">
+          Pick one or more sources, and which of their tables to include — a professionally formatted report
+          matching the app's branding, ready to share.
+        </p>
+        <div className="min-h-0 flex-1 space-y-1.5 overflow-auto rounded-lg border border-slate-200 p-1.5 dark:border-slate-800">
+          {conns.map((c) => {
+            const ds = datasetsOf(c.id);
+            if (ds.length === 0) return null;
+            const allOn = ds.every((d) => selected.has(d.id));
+            const someOn = ds.some((d) => selected.has(d.id));
+            const isOpen = expanded.has(c.id);
+            return (
+              <div key={c.id}>
+                <div className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-slate-100 dark:hover:bg-slate-800">
+                  <input type="checkbox" checked={allOn} ref={(el) => { if (el) el.indeterminate = someOn && !allOn; }}
+                    onChange={() => toggleConn(c.id)} />
+                  <Database size={13} className="shrink-0 text-slate-400" />
+                  <button onClick={() => toggleExpand(c.id)} className="flex min-w-0 flex-1 items-center gap-1 text-left font-medium">
+                    <span className="truncate">{c.name}</span>
+                    <span className="shrink-0 text-xs text-slate-400">({ds.filter((d) => selected.has(d.id)).length}/{ds.length})</span>
+                    {isOpen ? <ChevronDown size={13} className="shrink-0 text-slate-400" /> : <ChevronRight size={13} className="shrink-0 text-slate-400" />}
+                  </button>
+                </div>
+                {isOpen && (
+                  <div className="ml-6 space-y-0.5 border-l border-slate-200 pl-2 dark:border-slate-800">
+                    {ds.map((d) => (
+                      <label key={d.id} className="flex items-center gap-2 rounded-lg px-2 py-1 text-xs hover:bg-slate-100 dark:hover:bg-slate-800">
+                        <input type="checkbox" checked={selected.has(d.id)} onChange={() => toggleDataset(d.id)} />
+                        <Table2 size={11} className="shrink-0 text-slate-400" />
+                        <span className="min-w-0 flex-1 truncate font-mono">{d.schema}.{d.name}</span>
+                        <span className="shrink-0 text-slate-400">{d.columns.length} col</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {conns.every((c) => datasetsOf(c.id).length === 0) && (
+            <div className="py-6 text-center text-xs text-slate-400">No profiled tables yet.</div>
+          )}
+        </div>
+        <div className="mt-3 flex items-center gap-2">
+          <span className="text-xs text-slate-400">{selected.size} table(s) selected</span>
+          <button onClick={exportPDF} disabled={exporting || selected.size === 0} className="btn-ai ml-auto">
+            {exporting ? <Loader2 size={15} className="animate-spin" /> : <FileDown size={15} />} Export PDF
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function buildCatalogReportHTML(datasets: Dataset[], docs: Record<string, any>, connections: { id: string; name: string; type: string }[]): string {
+  const esc = escHtml;
+  const connName = (cid: string) => connections.find((c) => c.id === cid)?.name ?? cid;
+  const totalCols = datasets.reduce((s, d) => s + d.columns.length, 0);
+  const piiCols = datasets.reduce((s, d) => s + d.columns.filter((c) => c.profile.sensitivity === "PII").length, 0);
+  const avgQuality = totalCols === 0 ? 0 : Math.round(
+    datasets.reduce((s, d) => s + d.columns.reduce((s2, c) => s2 + c.profile.quality_score, 0), 0) / totalCols);
+
+  const byConn = new Map<string, Dataset[]>();
+  for (const d of datasets) {
+    if (!byConn.has(d.connection_id)) byConn.set(d.connection_id, []);
+    byConn.get(d.connection_id)!.push(d);
+  }
+
+  const tableSections = [...byConn.entries()].map(([cid, ds]) => {
+    const tables = ds.map((d) => {
+      const doc = docs[d.id] || {};
+      const cols = d.columns.map((c) => {
+        const cdoc = (doc.columns || {})[c.name] || {};
+        const qColor = c.profile.quality_score >= 80 ? "#009f3d" : c.profile.quality_score >= 50 ? "#f59e0b" : "#e11d48";
+        return `<tr>
+          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;font-family:ui-monospace,monospace;font-size:11.5px;">
+            ${esc(c.name)}${c.profile.sensitivity === "PII" ? ` <span style="color:#e11d48;font-size:10px;">🔒</span>` : ""}
+          </td>
+          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;font-size:11px;color:#64748b;">${esc(c.data_type)}</td>
+          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;font-size:11px;color:#64748b;">${esc(c.profile.semantic_type)}</td>
+          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;font-size:11px;color:#334155;">${esc(cdoc.definition || "—")}</td>
+          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right;font-size:11px;font-weight:700;color:${qColor};">${Math.round(c.profile.quality_score)}</td>
+        </tr>`;
+      }).join("");
+      const tags: string[] = doc.tags || [];
+      const owners: { name: string }[] = doc.owners || [];
+      return `
+      <div style="margin-top:16px;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;page-break-inside:avoid;">
+        <div style="padding:12px 14px;background:#f8fafc;border-left:5px solid #009f3d;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-family:ui-monospace,monospace;font-weight:700;font-size:13px;color:#0f172a;">${esc(d.schema)}.${esc(d.name)}</span>
+            ${doc.domain ? `<span style="font-size:10px;font-weight:700;color:#009f3d;background:#f0f9f3;border-radius:999px;padding:2px 8px;">${esc(doc.domain)}</span>` : ""}
+            <span style="margin-left:auto;font-size:11px;color:#94a3b8;">~${d.row_estimate.toLocaleString()} rows · ${d.columns.length} column(s)</span>
+          </div>
+          ${doc.definition ? `<p style="margin:6px 0 0;font-size:12px;color:#475569;line-height:1.5;">${esc(doc.definition)}</p>` : ""}
+          ${doc.synthesis ? `<p style="margin:6px 0 0;font-size:11.5px;color:#166534;background:#f0fdf4;border-radius:6px;padding:6px 8px;line-height:1.5;">${esc(doc.synthesis)}</p>` : ""}
+          ${(tags.length || owners.length) ? `<div style="margin-top:6px;font-size:10.5px;color:#64748b;">
+            ${tags.length ? `Tags: ${tags.map(esc).join(", ")}` : ""}${tags.length && owners.length ? " · " : ""}
+            ${owners.length ? `Owners: ${owners.map((o) => esc(o.name)).join(", ")}` : ""}
+          </div>` : ""}
+        </div>
+        <table style="width:100%;border-collapse:collapse;">
+          <thead><tr style="background:#fff;">
+            <th style="text-align:left;padding:5px 10px;font-size:9.5px;color:#94a3b8;text-transform:uppercase;">Column</th>
+            <th style="text-align:left;padding:5px 10px;font-size:9.5px;color:#94a3b8;text-transform:uppercase;">Type</th>
+            <th style="text-align:left;padding:5px 10px;font-size:9.5px;color:#94a3b8;text-transform:uppercase;">Semantic</th>
+            <th style="text-align:left;padding:5px 10px;font-size:9.5px;color:#94a3b8;text-transform:uppercase;">Definition</th>
+            <th style="text-align:right;padding:5px 10px;font-size:9.5px;color:#94a3b8;text-transform:uppercase;">Quality</th>
+          </tr></thead>
+          <tbody>${cols}</tbody>
+        </table>
+      </div>`;
+    }).join("");
+    return `
+      <div style="margin-top:24px;">
+        <div style="font-size:13px;font-weight:800;color:#0f172a;display:flex;align-items:center;gap:6px;">
+          <span style="width:8px;height:8px;border-radius:50%;background:#009f3d;display:inline-block;"></span>
+          ${esc(connName(cid))}
+        </div>
+        ${tables}
+      </div>`;
+  }).join("");
+
+  return `
+    <div style="${REPORT_FONT}padding:36px 40px;color:#0f172a;">
+      ${reportHeader("Catalog Export", [`${byConn.size} source(s)`, new Date().toLocaleString()])}
+
+      <div style="display:flex;gap:14px;margin-top:20px;">
+        <div style="flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:14px;">
+          <div style="font-size:22px;font-weight:800;">${datasets.length}</div>
+          <div style="font-size:11px;color:#94a3b8;">table(s) exported</div>
+        </div>
+        <div style="flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:14px;">
+          <div style="font-size:22px;font-weight:800;">${totalCols}</div>
+          <div style="font-size:11px;color:#94a3b8;">column(s)</div>
+        </div>
+        <div style="flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:14px;">
+          <div style="font-size:22px;font-weight:800;color:${piiCols > 0 ? "#e11d48" : "#0f172a"};">${piiCols}</div>
+          <div style="font-size:11px;color:#94a3b8;">PII field(s)</div>
+        </div>
+        <div style="flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:14px;">
+          <div style="font-size:22px;font-weight:800;color:${avgQuality >= 80 ? "#009f3d" : avgQuality >= 50 ? "#f59e0b" : "#e11d48"};">${avgQuality}</div>
+          <div style="font-size:11px;color:#94a3b8;">avg. quality score</div>
+        </div>
+      </div>
+
+      ${tableSections}
+
+      ${reportFooter("Generated by DOINg.Catalogue. Column definitions marked — are undocumented; " +
+        "🔒 marks a column detected as personally identifiable information (PII).")}
+    </div>`;
 }
 
 // ---- Table row with inline delete ----------------------------------------- //

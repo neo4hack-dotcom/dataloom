@@ -759,6 +759,24 @@ def cancel_quality_run(run_id: str):
     return {"ok": True}
 
 
+class QualityAnswerIn(BaseModel):
+    answer: str
+
+
+@app.post("/api/quality-checks/runs/{run_id}/answer")
+def answer_quality_run(run_id: str, body: QualityAnswerIn):
+    """Answer the agent's one clarifying question so a paused run can resume."""
+    run = store.get_quality_run(run_id)
+    if not run:
+        raise HTTPException(404, "run not found")
+    if run.get("status") != "waiting_input":
+        raise HTTPException(409, "this run isn't waiting for input")
+    if not body.answer.strip():
+        raise HTTPException(422, "answer must not be empty")
+    store.answer_quality_run_question(run_id, body.answer.strip())
+    return {"ok": True}
+
+
 @app.delete("/api/quality-checks/runs/{run_id}")
 def delete_quality_run(run_id: str):
     if not store.get_quality_run(run_id):

@@ -308,6 +308,13 @@ const SECTIONS: Section[] = [
           can read it and build lineage edges plus pre-documentation from it. This action is <b>always safe</b> —
           it merges with what exists and never erases a definition, so its controls stay green throughout.
         </P>
+        <H3>Export to PDF</H3>
+        <P>
+          The download icon next to the table filter opens a picker: choose one or more sources, then which
+          of their tables to include (or leave everything checked for the whole catalogue). It exports a
+          single branded PDF — per source, per table: definition, synthesis, domain, tags, owners, and a full
+          column table with type, semantic type, definition and quality score, with sensitive columns marked.
+        </P>
         <H3>Deprecation</H3>
         <P>
           Mark a table <b>Deprecated</b> with a reason and optional replacement table. A banner appears on the
@@ -469,10 +476,9 @@ const SECTIONS: Section[] = [
       <>
         <P>
           A separate, independent module from the QA Reviewer agent above — instead of auditing metadata
-          against fixed thresholds, it runs its own live statistical analysis directly against the source
-          (numeric outliers, categorical rarity, format-pattern breaks, duplicate rows) and uses the local LLM
-          to decide what's worth checking, follow up on anything surprising, and write the findings up in
-          plain English.
+          against fixed thresholds, it runs its own live statistical analysis directly against the source and
+          uses the local LLM to decide what's worth checking, ask you when something is genuinely ambiguous,
+          follow up on anything surprising, and write the findings up in plain English.
         </P>
         <H3>Running an analysis</H3>
         <Ul>
@@ -482,26 +488,46 @@ const SECTIONS: Section[] = [
           <li><b>Thresholds</b> (z-score, IQR multiplier, outlier/duplicate severity cutoffs, sample sizes) have
             sensible defaults — expand <b>Thresholds → customise</b> to tune them.</li>
         </Ul>
+        <H3>What it actually checks</H3>
+        <Ul>
+          <li><b>Per-column</b> — numeric outliers (IQR + z-score), categorical rarity, format-pattern breaks.</li>
+          <li><b>Table-level</b> — duplicate rows.</li>
+          <li><b>Cross-column consistency</b> — logically impossible date ordering (e.g. a delivery date before
+            its order date), and business-rule gaps (e.g. status="DELIVERED" with no delivery date set).</li>
+          <li><b>Temporal drift</b> — gaps or spikes in a time series that a quick manual look would miss.</li>
+          <li><b>Multivariate outliers</b> — two columns that each look normal alone but whose combination
+            doesn't (e.g. an ordinary quantity paired with an ordinary-looking but mismatched amount) —
+            a lightweight, dependency-free approximation of Mahalanobis-distance detection.</li>
+          <li><b>Semantic anomalies</b> — the LLM reads real sampled values of a business-critical column and
+            flags what's semantically implausible (placeholder junk, inconsistent category spelling) that no
+            statistical test would catch.</li>
+        </Ul>
         <H3>How the agent reasons — plan, check, adapt, interpret</H3>
         <Ul>
           <li><b>Plan</b> — before running anything expensive, the LLM looks at cheap discovery signals (column
             types, existing functional definitions, PII flags, your focus notes) and decides which checks are
-            worth running on which columns of which tables — skipping ones unlikely to reveal anything, which
-            is what keeps a run on a large warehouse fast.</li>
-          <li><b>Check</b> — the planned statistical checks run directly against the source.</li>
+            worth running on which columns/column-pairs of which tables — skipping ones unlikely to reveal
+            anything, which is what keeps a run on a large warehouse fast.</li>
+          <li><b>Check</b> — the planned checks run directly against the source; a failed query auto-retries
+            once with a smaller sample before giving up on that one check.</li>
           <li><b>Adapt</b> — the LLM reviews the first pass of results and can propose a small number of
-            targeted follow-up checks if something looks surprising, before moving on.</li>
+            targeted follow-up checks if something looks surprising.</li>
+          <li><b>Ask</b> — if a finding is genuinely ambiguous in a way only business context can resolve (e.g.
+            "is this Friday spike a real anomaly, or a known accounting close?"), the agent pauses <i>once</i>
+            with a specific question instead of guessing — answer it inline, or leave it for up to 8 minutes
+            and the run continues on its own.</li>
           <li><b>Interpret</b> — for each table, the LLM writes an executive summary and ranks findings by how
-            much they'd surprise someone who knows the dataset well — surfacing what a quick manual look
-            wouldn't easily catch, not just the obvious issues.</li>
+            much they'd surprise someone who knows the dataset well, using your answer (if you gave one) to
+            judge what's actually worth flagging.</li>
         </Ul>
         <P>Every phase streams live to the console, and you can <b>cancel</b> a run in progress at any time.</P>
         <H3>Reading the results &amp; exporting a report</H3>
         <P>
           Each table gets a risk badge (low/medium/high) and an executive summary, with its top findings
           explained in plain language alongside a suggested next step; minor findings collapse into a "more
-          findings" list. Click <b>Export PDF report</b> for a professionally formatted, shareable summary of
-          the whole run — table risk levels, findings, and the LLM's explanations — matching the app's branding.
+          findings" list. Click <b>Export PDF report</b> for a professionally formatted, shareable summary —
+          an executive overview with a Data Health Score, a severity matrix, every finding with the LLM's
+          explanation, and a consolidated recommendations list — matching the app's branding.
         </P>
         <P>
           Past reports are kept in the <b>Past reports</b> list on the left so you can revisit or re-export

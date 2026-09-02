@@ -891,6 +891,7 @@ class Store:
                 "scope": scope, "thresholds": thresholds, "focus_notes": focus_notes,
                 "status": "queued", "progress": 0.0, "phase": None, "logs": [],
                 "created_at": time.time(), "plan": None, "tables": [], "cancel_requested": False,
+                "pending_question": None, "question_answer": None,
             }
             self._db["quality_runs"].insert(0, run)
             self._db["quality_runs"] = self._db["quality_runs"][:30]
@@ -933,6 +934,18 @@ class Store:
     def is_quality_run_cancel_requested(self, run_id: str) -> bool:
         r = self.get_quality_run(run_id)
         return bool(r and r.get("cancel_requested"))
+
+    def answer_quality_run_question(self, run_id: str, answer: str):
+        with self._lock:
+            for r in self._db["quality_runs"]:
+                if r["id"] == run_id:
+                    r["question_answer"] = answer
+                    self._flush()
+                    return
+
+    def get_quality_run_answer(self, run_id: str) -> str | None:
+        r = self.get_quality_run(run_id)
+        return (r or {}).get("question_answer")
 
     def delete_quality_run(self, run_id: str):
         with self._lock:
