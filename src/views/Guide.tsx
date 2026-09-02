@@ -185,6 +185,46 @@ const SECTIONS: Section[] = [
     ),
   },
   {
+    id: "enrichment", label: "AI Enrichment Center", icon: Sparkles,
+    content: (
+      <>
+        <P>
+          Every local-LLM enrichment action that normally lives inside a specific table, relationship or MCP
+          connection, gathered in one place — grouped by the menu it belongs to — so you can launch what's
+          missing across the whole catalog without opening each item one by one.
+        </P>
+        <Ul>
+          <li><b>Auto-document tables</b> (Catalog) — drafts every column's definition for a table in one call.</li>
+          <li><b>Identity card &amp; synthesis</b> (Catalog) — generates each table's reusable identity card and plain-English summary.</li>
+          <li><b>ETL mapping detection</b> (Catalog) — for tables that look like mapping/config sheets, detects which column plays which role.</li>
+          <li><b>Explain relationships</b> (Relationships) — plain-business meaning and cardinality for every inferred or manual link.</li>
+          <li><b>Map MCP sources with AI</b> (Connections) — discovers an MCP server's tools and applies the proposed table mapping.</li>
+        </Ul>
+        <H3>Pending vs. enriched</H3>
+        <P>
+          Each item shows a <b>green</b> dot while nothing has been generated for it yet, and turns
+          <b> orange</b> once it has — so you can see at a glance what's left. <b>Run all pending</b> at the top
+          launches every pending item across every category, one at a time (never in parallel, to keep a
+          single local LLM responsive); each category also has its own <b>Run pending</b> button, and every
+          row has its own individual run button.
+        </P>
+        <Callout tone="ai">
+          Everything generated here is stored immediately — reloading the page or restarting the app never
+          loses it. Most actions (auto-document, ETL mapping detection, explain relationship) cache a
+          reviewable suggestion rather than silently overwriting a validated definition; open the table's
+          Identity Card or the relationship itself to review and apply it, exactly as if you'd triggered it
+          from there directly.
+        </Callout>
+        <H3>Run log</H3>
+        <P>
+          A collapsible panel at the bottom lists every item processed this session, in order, with a
+          checkmark or an error — useful for spotting the handful of items that failed (e.g. because the LLM
+          was briefly unavailable) in a large batch.
+        </P>
+      </>
+    ),
+  },
+  {
     id: "agents", label: "Agents & automation", icon: Bot,
     content: (
       <>
@@ -228,14 +268,15 @@ const SECTIONS: Section[] = [
           entity page on the right is organised into tabs:
         </P>
         <Ul>
-          <li><b>Overview</b> — stats, health score, tags, domain assignment, owners, deprecation status, and view count.</li>
+          <li><b>Identity Card</b> — everything that describes the table in one place: stats, health score,
+            tags, domain assignment, owners, deprecation status, view count, column-documentation status, the
+            AI-generated identity card &amp; content synthesis, logical partitioning, and ETL mapping import.</li>
           <li><b>Schema</b> — every column with its semantic type, tags, and a fingerprint panel (top values,
             null/distinct ratios, format) when selected.</li>
           <li><b>Lineage</b> — this table's relationships and column-lineage edges, with a link to open the
             full <b>Impact Analysis</b> view scoped to a specific column.</li>
           <li><b>Quality</b> — the health checklist behind this table's score (see <b>Data quality &amp; alerts</b>).</li>
           <li><b>Properties</b> — free-form key/value custom metadata (SLA, retention policy, source system…).</li>
-          <li><b>Documentation</b> — identity card, content synthesis, logical partitioning, and ETL mapping import.</li>
         </Ul>
         <H3>Editing a column definition</H3>
         <P>
@@ -291,7 +332,7 @@ const SECTIONS: Section[] = [
         <P>
           A hierarchical business taxonomy (e.g. Sales → EMEA), separate from the LLM-guessed free-text
           domain shown elsewhere. Build the tree in the <b>Domains</b> view, then assign each table to a node
-          from the Catalog's Overview tab. A parent node's count includes all its descendants.
+          from the Catalog's Identity Card tab. A parent node's count includes all its descendants.
         </P>
         <H3>Ownership</H3>
         <P>
