@@ -1,10 +1,17 @@
 import { useEffect, useState } from "react";
-import { KeyRound, Loader2, Plus, ShieldCheck, Trash2, UserX, UserCheck, Users as UsersIcon } from "lucide-react";
+import { KeyRound, Loader2, Plus, ShieldCheck, Eye, Trash2, UserX, UserCheck, Users as UsersIcon } from "lucide-react";
 import { api } from "../../api";
 import { useCatalog } from "../../store";
 import { useAuth } from "../../auth";
 import { timeAgo } from "../../lib/ui";
-import type { User } from "../../types";
+import type { Role, User } from "../../types";
+
+const ROLE_LABEL: Record<Role, string> = { admin: "Admin", member: "Read / write", viewer: "Read only" };
+const ROLE_HINT: Record<Role, string> = {
+  admin: "Full access, plus user management, MCP exposure and admin settings.",
+  member: "Can browse and edit the catalog — profile, document, tag, run agents.",
+  viewer: "Can navigate the catalog and ask the local LLM, but cannot create, edit or delete anything.",
+};
 
 export function Users() {
   const { toast } = useCatalog();
@@ -14,7 +21,7 @@ export function Users() {
   const [showNew, setShowNew] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<"admin" | "member">("member");
+  const [role, setRole] = useState<Role>("member");
   const [busy, setBusy] = useState(false);
   const [resetFor, setResetFor] = useState<string | null>(null);
   const [resetPw, setResetPw] = useState("");
@@ -44,7 +51,7 @@ export function Users() {
     catch (e) { toast("err", (e as Error).message); }
   };
 
-  const changeRole = async (u: User, role: "admin" | "member") => {
+  const changeRole = async (u: User, role: Role) => {
     try { await api.updateUser(u.id, { role }); await load(); }
     catch (e) { toast("err", (e as Error).message); }
   };
@@ -76,6 +83,12 @@ export function Users() {
         </button>
       </div>
 
+      <div className="card grid gap-2 p-3 text-xs text-slate-500 sm:grid-cols-3">
+        {(["admin", "member", "viewer"] as Role[]).map((r) => (
+          <div key={r}><b className="text-slate-700 dark:text-slate-200">{ROLE_LABEL[r]}</b> — {ROLE_HINT[r]}</div>
+        ))}
+      </div>
+
       {showNew && (
         <form onSubmit={createUser} className="card flex flex-wrap items-end gap-3 p-4">
           <label className="text-xs font-medium text-slate-500">
@@ -89,9 +102,10 @@ export function Users() {
           </label>
           <label className="text-xs font-medium text-slate-500">
             Role
-            <select className="input mt-1 w-32" value={role} onChange={(e) => setRole(e.target.value as "admin" | "member")}>
-              <option value="member">member</option>
-              <option value="admin">admin</option>
+            <select className="input mt-1 w-36" value={role} onChange={(e) => setRole(e.target.value as Role)}>
+              <option value="member">Read / write</option>
+              <option value="viewer">Read only</option>
+              <option value="admin">Admin</option>
             </select>
           </label>
           <button type="submit" disabled={busy} className="btn-primary text-xs">
@@ -119,7 +133,9 @@ export function Users() {
           {users.map((u) => (
             <div key={u.id} className="flex items-center gap-3 px-4 py-3 text-sm">
               <div className={`grid h-8 w-8 shrink-0 place-items-center rounded-full text-xs font-semibold ${
-                u.role === "admin" ? "bg-loom-500/15 text-loom-500" : "bg-slate-200 text-slate-500 dark:bg-slate-800"}`}>
+                u.role === "admin" ? "bg-loom-500/15 text-loom-500"
+                  : u.role === "viewer" ? "bg-slate-300/40 text-slate-500 dark:bg-slate-700/60"
+                  : "bg-slate-200 text-slate-500 dark:bg-slate-800"}`}>
                 {u.username.slice(0, 2).toUpperCase()}
               </div>
               <div className="min-w-0 flex-1">
@@ -128,15 +144,20 @@ export function Users() {
                   {u.role === "admin" && (
                     <span className="chip bg-loom-500/10 text-loom-500"><ShieldCheck size={11} /> admin</span>
                   )}
+                  {u.role === "viewer" && (
+                    <span className="chip bg-slate-500/10 text-slate-400"><Eye size={11} /> read only</span>
+                  )}
                   {!u.active && <span className="chip bg-slate-200 text-slate-500 dark:bg-slate-800">deactivated</span>}
                   {u.id === me?.id && <span className="chip bg-slate-200 text-slate-500 dark:bg-slate-800">you</span>}
                 </div>
                 <div className="text-xs text-slate-400">Created {timeAgo(u.created_at)} ago</div>
               </div>
-              <select className="input w-28 !py-1 text-xs" value={u.role} disabled={u.id === me?.id}
-                onChange={(e) => changeRole(u, e.target.value as "admin" | "member")}>
-                <option value="member">member</option>
-                <option value="admin">admin</option>
+              <select className="input w-36 !py-1 text-xs" value={u.role} disabled={u.id === me?.id}
+                title={ROLE_HINT[u.role]}
+                onChange={(e) => changeRole(u, e.target.value as Role)}>
+                <option value="member">Read / write</option>
+                <option value="viewer">Read only</option>
+                <option value="admin">Admin</option>
               </select>
               <button className="btn-ghost !p-1.5 text-xs" title="Reset password"
                 onClick={() => { setResetFor(u.id); setResetPw(""); }}>

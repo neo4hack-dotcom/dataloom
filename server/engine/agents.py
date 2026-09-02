@@ -361,11 +361,18 @@ def run_pipeline(store, conn: dict[str, Any], agent_ids: list[str], run_id: str)
         store.update_run(run_id, {"status": "done", "finished_at": time.time(),
                                   "summary": summary, "progress": 1.0})
         log("done", "Pipeline complete ✅")
+        store.add_notification(audience="all", category="run", kind="success",
+                               title="Pipeline finished",
+                               message=f"{conn['name']}: {total} agent(s) completed.",
+                               link={"tab": "agents"})
     except Exception as e:  # pragma: no cover
         log("error", f"Failed: {e}")
         log("error", traceback.format_exc().splitlines()[-1])
         store.update_run(run_id, {"status": "error", "finished_at": time.time(),
                                   "error": str(e)})
+        store.add_notification(audience="all", category="run", kind="error",
+                               title="Pipeline failed",
+                               message=f"{conn['name']}: {e}", link={"tab": "agents"})
 
 
 # --------------------------------------------------------------------------- #

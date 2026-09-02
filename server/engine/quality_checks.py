@@ -502,7 +502,17 @@ def run_quality_check(store, run_id: str) -> None:
             "phase": "done", "tables": tables_out,
         })
         log("done", "Analysis complete ✅")
+        high_risk = sum(1 for t in tables_out if t["interpretation"].get("risk_level") == "high")
+        store.add_notification(
+            audience="all", category="quality", kind="warning" if high_risk else "success",
+            title="Data quality analysis finished",
+            message=f"{conn['name']}: {len(tables_out)} table(s) analysed" +
+                    (f", {high_risk} at high risk" if high_risk else ""),
+            link={"tab": "quality-checks"})
     except Exception as e:  # pragma: no cover
         log("error", f"Failed: {e}")
         log("error", traceback.format_exc().splitlines()[-1])
         store.update_quality_run(run_id, {"status": "error", "finished_at": time.time(), "error": str(e)})
+        store.add_notification(audience="all", category="quality", kind="error",
+                               title="Data quality analysis failed",
+                               message=f"{conn['name']}: {e}", link={"tab": "quality-checks"})

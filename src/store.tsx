@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import type { ReactNode } from "react";
 import { api, Unauthorized, VersionConflict } from "./api";
 import { useAuth } from "./auth";
-import type { AgentRun, CatalogState, Health } from "./types";
+import type { AgentRun, CatalogState, Health, Notification } from "./types";
 
 interface Toast { id: number; kind: "ok" | "err" | "info"; text: string; }
 
@@ -26,6 +26,12 @@ interface Ctx {
   /** cross-view drill-down into Impact Analysis, pre-selecting a dataset+column */
   focusImpact: { dsId: string; col: string } | null;
   setFocusImpact: (f: { dsId: string; col: string } | null) => void;
+  /** true unless the signed-in user has the read-only "viewer" role */
+  canWrite: boolean;
+  notifications: Notification[];
+  unreadCount: number;
+  markNotificationRead: (id: string) => void;
+  markAllNotificationsRead: () => void;
 }
 
 const CatalogContext = createContext<Ctx | null>(null);
@@ -54,7 +60,10 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
     () => localStorage.getItem("dl.activeConn") || "all");
   const [focusDataset, setFocusDataset] = useState<{ dsId: string; col?: string } | null>(null);
   const [focusImpact, setFocusImpact] = useState<{ dsId: string; col: string } | null>(null);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
   const toastId = useRef(0);
+  const canWrite = user?.role !== "viewer";
 
   const setActiveConn = useCallback((id: string) => {
     setActiveConnState(id);
@@ -88,6 +97,10 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
   const mutate = useCallback(
     async <T,>(fn: (version: number) => Promise<T>): Promise<T | undefined> => {
       if (!state) return;
+      if (user?.role === "viewer") {
+        toast("err", "Your account has read-only access — ask an admin for edit rights.");
+        return undefined;
+      }
       try {
         const r = await fn(state.version);
         await refresh();
@@ -104,8 +117,36 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
         return undefined;
       }
     },
-    [state, refresh, toast, logout]
+    [state, user, refresh, toast, logout]
   );
+
+  // notifications — light poll, independent of the catalog refresh cadence
+  const loadNotifications = useCallback(async () => {
+    try {
+      const r = await api.listNotifications();
+      setNotifications(r.notifications);
+      setUnreadCount(r.unread_count);
+    } catch { /* ignore — not worth surfacing a toast for a background poll */ }
+  }, []);
+
+  useEffect(() => {
+    if (!user) { setNotifications([]); setUnreadCount(0); return; }
+    loadNotifications();
+    const t = setInterval(loadNotifications, 20000);
+    return () => clearInterval(t);
+  }, [user, loadNotifications]);
+
+  const markNotificationRead = useCallback((id: string) => {
+    setNotifications((ns) => ns.map((n) => (n.id === id ? { ...n, read: true } : n)));
+    setUnreadCount((c) => Math.max(0, c - 1));
+    api.markNotificationRead(id).catch(() => {});
+  }, []);
+
+  const markAllNotificationsRead = useCallback(() => {
+    setNotifications((ns) => ns.map((n) => ({ ...n, read: true })));
+    setUnreadCount(0);
+    api.markAllNotificationsRead().catch(() => {});
+  }, []);
 
   // poll an active run until done
   useEffect(() => {
@@ -128,7 +169,8 @@ export function CatalogProvider({ children }: { children: ReactNode }) {
   return (
     <CatalogContext.Provider value={{
       state, health, loading, toasts, refresh, toast, mutate, activeRun, setActiveRun, activeConn, setActiveConn,
-      focusDataset, setFocusDataset, focusImpact, setFocusImpact,
+      focusDataset, setFocusDataset, focusImpact, setFocusImpact, canWrite,
+      notifications, unreadCount, markNotificationRead, markAllNotificationsRead,
     }}>
       {children}
     </CatalogContext.Provider>

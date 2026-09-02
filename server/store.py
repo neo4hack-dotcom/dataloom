@@ -42,6 +42,7 @@ _DEFAULT: dict[str, Any] = {
     "domains": [],
     "column_lineage": [],
     "quality_runs": [],
+    "notifications": [],
     "settings": {
         "theme": "dark",
         "llm": {
@@ -1066,11 +1067,59 @@ class Store:
             self._db["sessions"] = {t: s for t, s in self._db["sessions"].items() if s.get("user_id") != uid}
             self._bump("user.delete", uid)
 
+    # -- notifications ------------------------------------------------------------ #
+    # Per-user read state, not per-user targeting (this is a shared workspace, not
+    # multi-tenant) — 'audience' controls who a notification is even visible to,
+    # 'read_by' tracks which of those users have seen it. Never version-bumping:
+    # these are operational, not catalog content, so bumping here would spuriously
+    # 409 every other open tab on every pipeline run / user edit.
+    def add_notification(self, *, audience: str, title: str, message: str,
+                         kind: str = "info", category: str = "system",
+                         user_id: str | None = None, link: dict[str, Any] | None = None) -> dict[str, Any]:
+        with self._lock:
+            n = {
+                "id": f"note_{int(time.time()*1000)}_{secrets.token_hex(3)}",
+                "audience": audience, "user_id": user_id,
+                "title": title, "message": message, "kind": kind, "category": category,
+                "link": link, "created_at": time.time(), "read_by": [],
+            }
+            self._db["notifications"].insert(0, n)
+            self._db["notifications"] = self._db["notifications"][:500]
+            self._flush()
+            return n
+
+    def notifications_for(self, user: dict[str, Any]) -> list[dict[str, Any]]:
+        is_admin = user.get("role") == "admin"
+        out = []
+        for n in self._db["notifications"]:
+            visible = (n["audience"] == "all" or (n["audience"] == "admins" and is_admin)
+                      or (n["audience"] == "user" and n.get("user_id") == user["id"]))
+            if visible:
+                out.append({**n, "read": user["id"] in (n.get("read_by") or [])})
+        return out[:100]
+
+    def mark_notification_read(self, nid: str, user_id: str):
+        with self._lock:
+            n = next((x for x in self._db["notifications"] if x["id"] == nid), None)
+            if n and user_id not in n["read_by"]:
+                n["read_by"].append(user_id)
+                self._flush()
+
+    def mark_all_notifications_read(self, user: dict[str, Any]):
+        with self._lock:
+            for n in self.notifications_for(user):
+                if not n["read"]:
+                    self.mark_notification_read(n["id"], user["id"])
+
     # -- sessions ---------------------------------------------------------------- #
     def create_session(self, token: str, user_id: str, ttl_seconds: int = 60 * 60 * 24 * 30) -> dict[str, Any]:
         with self._lock:
-            session = {"user_id": user_id, "created_at": time.time(),
-                       "expires_at": time.time() + ttl_seconds}
+            now = time.time()
+            # opportunistic cleanup of expired sessions on every login — keeps the
+            # sessions dict from growing unbounded across hundreds of users over time
+            self._db["sessions"] = {t: s for t, s in self._db["sessions"].items()
+                                    if s.get("expires_at", 0) > now}
+            session = {"user_id": user_id, "created_at": now, "expires_at": now + ttl_seconds}
             self._db["sessions"][token] = session
             self._flush()  # not version-bumping (not part of catalog state)
             return session

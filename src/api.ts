@@ -1,7 +1,7 @@
 import type {
   AgentRun, AlertSettings, CatalogState, ColumnLineageEdge, Connection, ConnectorSettings, DiscoveredTable, Domain, Health,
-  LlmConfig, LlmTest, McpConfig, McpCoverageGap, McpMappingTable, McpQueryDef, McpTool, Owner, QualityRun, QualityThresholds,
-  QueryLogEntry, SearchHit, User,
+  LlmConfig, LlmTest, McpConfig, McpCoverageGap, McpMappingTable, McpQueryDef, McpTool, Notification, Owner, QualityRun,
+  QualityThresholds, QueryLogEntry, Role, SearchHit, User,
 } from "./types";
 
 export class VersionConflict extends Error {
@@ -335,12 +335,19 @@ export const api = {
 
   // -- users (admin) --
   listUsers: () => req<{ users: User[] }>("/users"),
-  createUser: (body: { username: string; password: string; role: "admin" | "member" }) =>
+  createUser: (body: { username: string; password: string; role: Role }) =>
     req<{ user: User }>("/users", { method: "POST", body: JSON.stringify(body) }),
-  updateUser: (id: string, patch: { role?: "admin" | "member"; active?: boolean; password?: string }) =>
+  updateUser: (id: string, patch: { role?: Role; active?: boolean; password?: string }) =>
     req<{ user: User }>(`/users/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteUser: (id: string) =>
     req<{ ok: boolean }>(`/users/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
+  // -- notifications --
+  listNotifications: () => req<{ notifications: Notification[]; unread_count: number }>("/notifications"),
+  markNotificationRead: (id: string) =>
+    req<{ ok: boolean }>(`/notifications/${encodeURIComponent(id)}/read`, { method: "POST" }),
+  markAllNotificationsRead: () =>
+    req<{ ok: boolean }>("/notifications/read-all", { method: "POST" }),
 
   // -- query log --
   listQueries: () => req<{ active: QueryLogEntry[]; recent: QueryLogEntry[] }>("/queries"),
