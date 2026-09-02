@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 import {
   LifeBuoy, Rocket, Database, ListChecks, Bot, Table2, Tags, ShieldCheck,
-  Route, Search, Compass, UserCog, Sliders, ChevronRight, Zap, Sparkles, Microscope,
+  Route, Search, Compass, UserCog, Sliders, ChevronRight, Zap, Sparkles, Microscope, BookMarked,
 } from "lucide-react";
 
 function H3({ children }: { children: ReactNode }) {
@@ -111,6 +111,45 @@ const SECTIONS: Section[] = [
           default. See <b>Sources &amp; scope</b> for a safer, table-by-table way to do the same thing on
           large warehouses.
         </P>
+      </>
+    ),
+  },
+  {
+    id: "mcp-library", label: "MCP Library", icon: BookMarked,
+    content: (
+      <>
+        <P>
+          An MCP source's <b>Map with AI</b> mapping only captures what a tool's live sample looks like —
+          the <b>MCP Library</b> goes further, browsing the server's full tool surface (mapped or not) and
+          letting you paste the real SQL query or source code behind a tool so the local LLM can describe
+          what it actually does, instead of guessing from a JSON sample alone.
+        </P>
+        <H3>Tools, Queries, Coverage</H3>
+        <Ul>
+          <li><b>Tools</b> lists every tool the MCP server declares — including write/action tools the
+            mapping step skips — flagging which are already mapped to a catalog table and which have a
+            documented query.</li>
+          <li><b>Add code/SQL</b> on any tool opens a small editor: paste the query or function that backs
+            it, pick <b>SQL</b> or <b>Code</b>, and click <b>Extract with AI</b>. One LLM call returns a
+            plain-English functional description, every table the query actually reads from or writes to,
+            column-level meaning (including computed-column logic), and — if that tool is already mapped —
+            a <b>reconciliation</b> against the mapped columns, flagging anything the live sample missed or
+            invented.</li>
+          <li><b>Coverage</b> ranks the tools most worth documenting next, so maximising coverage is a
+            queue to work through rather than a guess.</li>
+        </Ul>
+        <H3>Cross-database links</H3>
+        <P>
+          When a pasted query references a table name that matches a dataset from a <i>different</i>
+          connection, the extraction proposes it as a <b>link candidate</b> — click <b>Add link</b> to turn
+          it into a real lineage edge (visible in Lineage / Impact Analysis) without typing anything by
+          hand. This only activates once the tool itself has been mapped and profiled into a catalog table.
+        </P>
+        <Callout tone="ai">
+          Everything the MCP Library learns is also exposed through this app's own MCP server (see
+          <b> Administration → MCP</b>) — so another agent connecting to your catalog can learn not just
+          your tables, but the real logic behind the other MCP servers you've referenced.
+        </Callout>
       </>
     ),
   },
@@ -436,6 +475,10 @@ const SECTIONS: Section[] = [
           Admin-only configuration for exposing the catalog to external AI agents over MCP: toggle it on,
           choose which tools are exposed (list datasets, get schema, search, get a definition, lineage,
           glossary, sample rows), and control exposure (hide PII by default, deny specific datasets or columns).
+          Three tools expose the <b>MCP Library</b> itself — <code>list_mcp_sources</code>,
+          <code> get_mcp_source_tools</code> and <code>get_mcp_query_definition</code> — so an external agent
+          connecting to this catalog's own MCP endpoint can discover which other MCP servers you've referenced
+          and read the actual documented logic behind their tools, not just this catalog's own tables.
         </P>
         <H3>Connector settings</H3>
         <P>

@@ -15,6 +15,9 @@ const TOOL_META: { id: string; label: string; desc: string; liveData?: boolean }
   { id: "get_lineage", label: "get_lineage", desc: "Inbound/outbound lineage edges for a dataset." },
   { id: "get_glossary_term", label: "get_glossary_term", desc: "Look up a business glossary term." },
   { id: "sample_dataset_rows", label: "sample_dataset_rows", desc: "Fetch a small, row-limited sample of real rows from the source.", liveData: true },
+  { id: "list_mcp_sources", label: "list_mcp_sources", desc: "List every other MCP server referenced in this catalog's MCP Library, with coverage counts." },
+  { id: "get_mcp_source_tools", label: "get_mcp_source_tools", desc: "Full tool inventory of one referenced MCP source, flagging what's mapped/documented." },
+  { id: "get_mcp_query_definition", label: "get_mcp_query_definition", desc: "The actual SQL/code + LLM-extracted logic behind one referenced MCP tool." },
 ];
 
 function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {

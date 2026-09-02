@@ -75,6 +75,9 @@ _DEFAULT: dict[str, Any] = {
                 "get_lineage": False,
                 "get_glossary_term": True,
                 "sample_dataset_rows": False,
+                "list_mcp_sources": True,
+                "get_mcp_source_tools": True,
+                "get_mcp_query_definition": True,
             },
             "exposure": {
                 "hide_pii": True,
@@ -298,6 +301,52 @@ class Store:
             conn["discovered_at"] = time.time()
             self._bump("connection.discover", f"{cid}: {len(tables)} tables")
             return tables
+
+    # -- MCP Library: raw tool inventory + pasted code/SQL definitions ------- #
+    def set_mcp_tools(self, cid: str, tools: list[dict[str, Any]]):
+        """Persist the MCP server's full discovered tool inventory (every
+        tool, not just the ones proposed as tables) so the MCP Library can
+        browse it without re-hitting the remote server on every visit."""
+        with self._lock:
+            conn = self.get_connection(cid)
+            if not conn:
+                raise ValueError("connection not found")
+            conn["mcp_tools"] = tools
+            conn["mcp_tools_at"] = time.time()
+            self._bump("connection.mcp_tools", f"{cid}: {len(tools)} tools")
+            return tools
+
+    def add_mcp_query(self, cid: str, entry: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            conn = self.get_connection(cid)
+            if not conn:
+                raise ValueError("connection not found")
+            entry = dict(entry)
+            entry["id"] = f"mq_{int(time.time()*1000)}"
+            entry["created_at"] = time.time()
+            conn.setdefault("mcp_queries", []).append(entry)
+            self._bump("connection.mcp_query.add", f"{cid}: {entry.get('tool')}")
+            return entry
+
+    def update_mcp_query(self, cid: str, qid: str, patch: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            conn = self.get_connection(cid)
+            if not conn:
+                raise ValueError("connection not found")
+            q = next((x for x in conn.get("mcp_queries", []) if x["id"] == qid), None)
+            if not q:
+                raise ValueError("query not found")
+            q.update(patch)
+            self._bump("connection.mcp_query.update", f"{cid}: {qid}")
+            return q
+
+    def delete_mcp_query(self, cid: str, qid: str):
+        with self._lock:
+            conn = self.get_connection(cid)
+            if not conn:
+                raise ValueError("connection not found")
+            conn["mcp_queries"] = [x for x in conn.get("mcp_queries", []) if x["id"] != qid]
+            self._bump("connection.mcp_query.delete", f"{cid}: {qid}")
 
     def set_scope(self, cid: str, keys: list[str], row_limits: dict[str, int] | None = None):
         """Persist the user-selected scope (list of 'schema.name') for a connection,

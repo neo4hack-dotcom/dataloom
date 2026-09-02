@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Database, Table2, GitCompare, Workflow, Bot, Tags,
   Search, Settings as SettingsIcon, Command, Moon, Sun, Sparkles, Cpu,
   CircleDot, Link2, Compass, Library as LibraryIcon, ListChecks, Activity,
-  Plug, Users as UsersIcon, LogOut, Globe2, Route, LifeBuoy, Microscope,
+  Plug, Users as UsersIcon, LogOut, Globe2, Route, LifeBuoy, Microscope, BookMarked,
 } from "lucide-react";
 import { CatalogProvider, useCatalog } from "./store";
 import { AuthProvider, useAuth } from "./auth";
@@ -31,16 +31,18 @@ import { TagsView } from "./views/TagsView";
 import { ImpactAnalysis } from "./views/ImpactAnalysis";
 import { Guide } from "./views/Guide";
 import { QualityChecks } from "./views/QualityChecks";
+import { McpLibrary } from "./views/McpLibrary";
 
 export type Tab =
   | "overview" | "library" | "connections" | "sources" | "catalog" | "explorer" | "relationships"
   | "lineage" | "impact" | "domains" | "tags" | "agents" | "glossary" | "search" | "settings"
-  | "queries" | "mcp" | "users" | "guide" | "quality-checks";
+  | "queries" | "mcp" | "users" | "guide" | "quality-checks" | "mcp-library";
 
 const TABS: { id: Tab; label: string; icon: typeof Database; group?: string; adminOnly?: boolean }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "library", label: "Library", icon: LibraryIcon },
   { id: "connections", label: "Connections", icon: Database, group: "Build" },
+  { id: "mcp-library", label: "MCP Library", icon: BookMarked },
   { id: "sources", label: "Sources & scope", icon: ListChecks },
   { id: "catalog", label: "Catalog", icon: Table2 },
   { id: "explorer", label: "Explorer", icon: Compass },
@@ -216,6 +218,7 @@ function Shell() {
               {tab === "overview" && <Overview goto={setTab} />}
               {tab === "library" && <Library goto={setTab} />}
               {tab === "connections" && <Connections goto={setTab} />}
+              {tab === "mcp-library" && <McpLibrary goto={setTab} />}
               {tab === "sources" && <Sources goto={setTab} />}
               {tab === "catalog" && <Catalog goto={setTab} />}
               {tab === "explorer" && <Explorer />}
