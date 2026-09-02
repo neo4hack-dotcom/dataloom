@@ -333,6 +333,17 @@ const SECTIONS: Section[] = [
           with explicit <b>column lineage</b> edges you add manually (e.g. "this column is computed from that
           one via an ETL job"). Use this before altering or dropping a column to see the blast radius.
         </P>
+        <H3>Catalog Graph</H3>
+        <P>
+          A single zoomable map of everything: sources, tables and (for MCP sources) unmapped tools, with
+          every relationship, lineage and mapping edge between them. <b>Scroll to zoom, drag to pan</b>, or
+          use the toolbar's zoom/fit buttons. The left panel lets you <b>sub-select a scope</b> — uncheck a
+          source to hide it entirely, or collapse a large source into one cluster node (automatic past 6
+          tables) to keep the graph readable; cross-source edges still show, just pointing at the cluster.
+          Table nodes are colored by data quality (green/amber/red), relationship types can be toggled off
+          individually, the search box finds and selects any node by name, and checking <b>Isolate
+          neighborhood</b> after selecting a node dims everything except its direct connections.
+        </P>
       </>
     ),
   },
@@ -462,8 +473,22 @@ const SECTIONS: Section[] = [
     id: "admin", label: "Administration", icon: UserCog,
     content: (
       <>
-        <H3>Users</H3>
-        <P>Admin-only user management — create accounts, assign the <b>admin</b> or <b>member</b> role.</P>
+        <H3>Users &amp; roles</H3>
+        <P>
+          Admin-only user management. Three roles: <b>Admin</b> (everything, plus user management and MCP
+          exposure), <b>Read / write</b> (browse and edit the catalogue, run agents and quality checks), and
+          <b> Read only</b> (browse the catalogue and ask the local LLM/Librarian, but every create, edit,
+          delete or run action is rejected — enforced by the server itself, not just hidden buttons, so it
+          holds even if someone calls the API directly). A role change or deactivation notifies every admin.
+        </P>
+        <H3>Notifications</H3>
+        <P>
+          The bell icon in the sidebar footer shows a per-user unread count. Everyone sees pipeline and
+          Data Quality Check completions/failures and connection removals; admins additionally see
+          user-management and security events (a user's role changed, the MCP token rotated or revoked).
+          Clicking a notification marks it read and jumps to the relevant view; <b>Mark all read</b> clears
+          the badge. Each user's read state is their own — nothing is dismissed for anyone else.
+        </P>
         <H3>Admin account recovery</H3>
         <P>
           If you're locked out, click <b>Forgot password? Reset admin account</b> on the login screen. A

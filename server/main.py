@@ -11,6 +11,7 @@ import contextlib
 import os
 import threading
 import time
+import anyio.to_thread
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -35,6 +36,10 @@ _mcp_asgi_app, _mcp_session_manager = create_mcp_app(store)
 
 @contextlib.asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # Every sync `def` route (nearly all of them) runs in Starlette's shared
+    # threadpool, capped at 40 concurrent threads by default — too little headroom
+    # for 200+ concurrently connected users each issuing occasional requests.
+    anyio.to_thread.current_default_thread_limiter().total_tokens = 200
     async with _mcp_session_manager.run():
         yield
 
@@ -63,6 +68,11 @@ async def _auth_gate(request: Request, call_next):
     user = store.get_user(session["user_id"]) if session else None
     if not user or not user.get("active", True):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if (user.get("role") == auth.VIEWER and request.method not in ("GET", "HEAD", "OPTIONS")
+            and not auth.viewer_write_allowed(path)):
+        return JSONResponse({"error": "read_only",
+                             "message": "Your account has read-only access — ask an admin for edit rights."},
+                            status_code=403)
     request.state.user = user
     return await call_next(request)
 
@@ -164,6 +174,25 @@ def auth_me(request: Request):
     return {"user": auth.public_user(request.state.user)}
 
 
+# -- notifications ------------------------------------------------------------- #
+@app.get("/api/notifications")
+def list_notifications(request: Request):
+    items = store.notifications_for(request.state.user)
+    return {"notifications": items, "unread_count": sum(1 for n in items if not n["read"])}
+
+
+@app.post("/api/notifications/{nid}/read")
+def mark_notification_read(nid: str, request: Request):
+    store.mark_notification_read(nid, request.state.user["id"])
+    return {"ok": True}
+
+
+@app.post("/api/notifications/read-all")
+def mark_all_notifications_read(request: Request):
+    store.mark_all_notifications_read(request.state.user)
+    return {"ok": True}
+
+
 class UserIn(BaseModel):
     username: str
     password: str
@@ -187,6 +216,9 @@ def create_user(body: UserIn, request: Request):
         user = store.add_user(body.username.strip(), auth.hash_password(body.password), body.role)
     except ValueError as e:
         raise HTTPException(409, str(e))
+    store.add_notification(audience="admins", category="user_mgmt", kind="info",
+                           title="New user created", message=f"{user['username']} ({body.role})",
+                           link={"tab": "users"})
     return {"user": auth.public_user(user)}
 
 
@@ -201,7 +233,7 @@ def update_user(uid: str, body: UserPatchIn, request: Request):
     admin = require_admin(request)
     if body.role is not None and body.role not in auth.ROLES:
         raise HTTPException(422, f"role must be one of {auth.ROLES}")
-    if uid == admin["id"] and (body.active is False or body.role == auth.MEMBER):
+    if uid == admin["id"] and (body.active is False or (body.role is not None and body.role != auth.ADMIN)):
         raise HTTPException(400, "You cannot demote or deactivate your own account")
     patch: dict[str, Any] = {}
     if body.role is not None:
@@ -216,6 +248,11 @@ def update_user(uid: str, body: UserPatchIn, request: Request):
         user = store.update_user(uid, patch)
     except ValueError as e:
         raise HTTPException(404, str(e))
+    if body.role is not None or body.active is not None:
+        detail = f"{user['username']}" + (f" → {body.role}" if body.role is not None else "") + \
+            (" (deactivated)" if body.active is False else " (reactivated)" if body.active is True else "")
+        store.add_notification(audience="admins", category="user_mgmt", kind="info",
+                               title="User access changed", message=detail, link={"tab": "users"})
     return {"user": auth.public_user(user)}
 
 
@@ -224,7 +261,11 @@ def delete_user(uid: str, request: Request):
     admin = require_admin(request)
     if uid == admin["id"]:
         raise HTTPException(400, "You cannot delete your own account")
+    target = store.get_user(uid)
     store.delete_user(uid)
+    if target:
+        store.add_notification(audience="admins", category="user_mgmt", kind="warning",
+                               title="User deleted", message=target["username"], link={"tab": "users"})
     return {"ok": True}
 
 
@@ -308,6 +349,9 @@ def rotate_mcp_token(request: Request, x_base_version: int | None = Header(defau
     guard(x_base_version)
     token = auth.create_token()
     store.set_mcp_token(auth.hash_token(token), token[:8])
+    store.add_notification(audience="admins", category="security", kind="warning",
+                           title="MCP token rotated", message="The previous token no longer works.",
+                           link={"tab": "mcp"})
     return {"token": token, "prefix": token[:8], "version": store.version}
 
 
@@ -316,6 +360,9 @@ def revoke_mcp_token(request: Request, x_base_version: int | None = Header(defau
     require_admin(request)
     guard(x_base_version)
     store.set_mcp_token(None, None)
+    store.add_notification(audience="admins", category="security", kind="warning",
+                           title="MCP token revoked", message="The MCP server can no longer be reached with a token.",
+                           link={"tab": "mcp"})
     return {"ok": True, "version": store.version}
 
 
@@ -360,7 +407,14 @@ def add_connection(body: ConnectionIn, x_base_version: int | None = Header(defau
 @app.delete("/api/connections/{cid}")
 def del_connection(cid: str, x_base_version: int | None = Header(default=None)):
     guard(x_base_version)
+    conn = store.get_connection(cid)
+    ds_count = len([d for d in store.snapshot()["datasets"] if d["connection_id"] == cid])
     store.delete_connection(cid)
+    if conn:
+        store.add_notification(audience="all", category="connection", kind="info",
+                               title="Connection removed",
+                               message=f"{conn['name']}" + (f" and {ds_count} table(s)" if ds_count else ""),
+                               link={"tab": "connections"})
     return {"ok": True, "version": store.version}
 
 

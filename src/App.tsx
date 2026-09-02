@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Database, Table2, GitCompare, Workflow, Bot, Tags,
   Search, Settings as SettingsIcon, Command, Moon, Sun, Sparkles, Cpu,
   CircleDot, Link2, Compass, Library as LibraryIcon, ListChecks, Activity,
-  Plug, Users as UsersIcon, LogOut, Globe2, Route, LifeBuoy, Microscope, BookMarked,
+  Plug, Users as UsersIcon, LogOut, Globe2, Route, LifeBuoy, Microscope, BookMarked, Waypoints,
 } from "lucide-react";
 import { CatalogProvider, useCatalog } from "./store";
 import { AuthProvider, useAuth } from "./auth";
@@ -32,11 +32,13 @@ import { ImpactAnalysis } from "./views/ImpactAnalysis";
 import { Guide } from "./views/Guide";
 import { QualityChecks } from "./views/QualityChecks";
 import { McpLibrary } from "./views/McpLibrary";
+import { CatalogGraph } from "./views/CatalogGraph";
+import { NotificationBell } from "./components/NotificationBell";
 
 export type Tab =
   | "overview" | "library" | "connections" | "sources" | "catalog" | "explorer" | "relationships"
   | "lineage" | "impact" | "domains" | "tags" | "agents" | "glossary" | "search" | "settings"
-  | "queries" | "mcp" | "users" | "guide" | "quality-checks" | "mcp-library";
+  | "queries" | "mcp" | "users" | "guide" | "quality-checks" | "mcp-library" | "catalog-graph";
 
 const TABS: { id: Tab; label: string; icon: typeof Database; group?: string; adminOnly?: boolean }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
@@ -49,6 +51,7 @@ const TABS: { id: Tab; label: string; icon: typeof Database; group?: string; adm
   { id: "relationships", label: "Relationships", icon: GitCompare },
   { id: "lineage", label: "Lineage", icon: Workflow },
   { id: "impact", label: "Impact Analysis", icon: Route },
+  { id: "catalog-graph", label: "Catalog Graph", icon: Waypoints },
   { id: "domains", label: "Domains", icon: Globe2, group: "Governance" },
   { id: "tags", label: "Tags", icon: Tags },
   { id: "glossary", label: "Glossary", icon: Tags },
@@ -162,13 +165,16 @@ function Shell() {
                 {health?.llm.up ? "LLM online" : "LLM offline"}
               </span>
             </div>
-            <button onClick={() => setDark((d) => !d)} className="btn-ghost !p-1.5">
-              {dark ? <Sun size={15} /> : <Moon size={15} />}
-            </button>
+            <div className="flex items-center gap-0.5">
+              <NotificationBell goto={setTab} />
+              <button onClick={() => setDark((d) => !d)} className="btn-ghost !p-1.5">
+                {dark ? <Sun size={15} /> : <Moon size={15} />}
+              </button>
+            </div>
           </div>
           <div className="flex items-center justify-between px-1">
             <span className="truncate text-xs text-slate-500" title={user?.username}>
-              {user?.username} {user?.role === "admin" && "· admin"}
+              {user?.username} {user?.role !== "member" && `· ${user?.role === "viewer" ? "read only" : user?.role}`}
             </span>
             <button onClick={logout} title="Log out" className="btn-ghost !p-1.5">
               <LogOut size={14} />
@@ -225,6 +231,7 @@ function Shell() {
               {tab === "relationships" && <Relationships />}
               {tab === "lineage" && <Lineage />}
               {tab === "impact" && <ImpactAnalysis />}
+              {tab === "catalog-graph" && <CatalogGraph />}
               {tab === "domains" && <Domains goto={setTab} />}
               {tab === "tags" && <TagsView goto={setTab} />}
               {tab === "agents" && <Agents />}

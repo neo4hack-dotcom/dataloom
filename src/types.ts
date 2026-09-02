@@ -438,12 +438,26 @@ export interface SearchHit {
   domain_id?: string;
 }
 
+export type Role = "admin" | "member" | "viewer";
+
 export interface User {
   id: string;
   username: string;
-  role: "admin" | "member";
+  role: Role;
   active: boolean;
   created_at: number;
+}
+
+export interface Notification {
+  id: string;
+  audience: "all" | "admins" | "user";
+  title: string;
+  message: string;
+  kind: "info" | "success" | "warning" | "error";
+  category: string;
+  link: { tab?: string } | null;
+  created_at: number;
+  read: boolean;
 }
 
 export interface QueryLogEntry {
