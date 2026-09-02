@@ -19,7 +19,7 @@ from typing import Any
 
 import auth
 from store import Store
-from engine import llm, agents, explore
+from engine import llm, agents, explore, mcp_client, quality_checks
 from engine import search as search_engine
 from engine.connectors import build_connector
 from engine.query_registry import registry as query_registry, QueryCancelled
@@ -413,6 +413,52 @@ def discover_tables(cid: str, x_base_version: int | None = Header(default=None))
     return {"ok": True, "count": len(inv), "tables": inv, "version": store.version}
 
 
+# -- MCP source: connect OUT to another app's MCP server as a data source ---- #
+@app.post("/api/connections/{cid}/mcp/discover-mapping")
+def mcp_discover_mapping(cid: str):
+    """Lists the remote MCP server's tools and has the local LLM propose a
+    table/column mapping from them, sampling the safely-callable ones live to
+    maximise coverage. Preview only — nothing is persisted until the client
+    calls mcp/mapping to apply the (possibly human-edited) result."""
+    conn = store.get_connection(cid)
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    if conn.get("type") != "mcp":
+        raise HTTPException(400, "not an MCP connection")
+    cfg = conn.get("config", {})
+    url = cfg.get("url")
+    if not url:
+        raise HTTPException(400, "connection has no MCP url configured")
+    token = cfg.get("token") or None
+    try:
+        tools = mcp_client.discover_sync(url, token)
+    except Exception as e:
+        raise HTTPException(422, f"MCP discovery failed: {e}")
+    try:
+        mapping = explore.map_mcp_tools(url, token, tools, model=conn.get("llm_model") or _llm_model())
+    except explore.LLMUnavailable:
+        raise HTTPException(503, "Local LLM unavailable")
+    return {"ok": True, "tool_count": len(tools), "tools": tools, "mapping": mapping}
+
+
+class McpMappingIn(BaseModel):
+    tables: list[dict[str, Any]]
+
+
+@app.post("/api/connections/{cid}/mcp/mapping")
+def mcp_apply_mapping(cid: str, body: McpMappingIn, x_base_version: int | None = Header(default=None)):
+    """Persists a (possibly human-reviewed) MCP table/column mapping — from
+    then on this connection's list_tables/get_columns read it directly, with
+    no further LLM calls, exactly like any other connector."""
+    guard(x_base_version)
+    conn = store.get_connection(cid)
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    config = {**conn.get("config", {}), "mcp_mapping": {"tables": body.tables, "mapped_at": time.time()}}
+    conn = store.update_connection(cid, {"config": config})
+    return {"ok": True, "connection": conn, "version": store.version}
+
+
 class ScopeIn(BaseModel):
     tables: list[str]  # ["schema.name", ...]
     row_limits: dict[str, int] | None = None  # {"schema.name": limit} — set after a row-count check
@@ -497,6 +543,72 @@ def cancel_run(run_id: str):
     ok = store.request_run_cancel(run_id)
     if not ok:
         raise HTTPException(409, "run already finished")
+    return {"ok": True}
+
+
+# -- data quality checks (independent deep-profiling module) ----------------- #
+class QualityThresholdsIn(BaseModel):
+    zscore: float = 3.0
+    iqr_multiplier: float = 1.5
+    outlier_pct_high: float = 0.05
+    duplicate_pct_high: float = 0.05
+    categorical_cardinality_max: float = 0.5
+    pattern_dominance_min: float = 0.9
+    value_sample_size: int = 3000
+    row_sample_size: int = 2000
+
+
+class QualityRunIn(BaseModel):
+    connection_id: str
+    scope: dict[str, list[str] | None]  # dataset_id -> column names, or null for every column
+    thresholds: QualityThresholdsIn = QualityThresholdsIn()
+    focus_notes: str = ""
+
+
+@app.post("/api/quality-checks/runs")
+def launch_quality_run(body: QualityRunIn, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    conn = store.get_connection(body.connection_id)
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    if not body.scope:
+        raise HTTPException(400, "select at least one table")
+    run = store.create_quality_run(body.connection_id, body.scope, body.thresholds.model_dump(), body.focus_notes)
+    t = threading.Thread(target=quality_checks.run_quality_check, args=(store, run["id"]), daemon=True)
+    t.start()
+    return {"run": run, "version": store.version}
+
+
+@app.get("/api/quality-checks/runs")
+def list_quality_runs():
+    # trimmed: the list view doesn't need each run's full findings payload
+    return {"runs": [{k: v for k, v in r.items() if k not in ("tables", "logs")}
+                     for r in store.quality_runs()]}
+
+
+@app.get("/api/quality-checks/runs/{run_id}")
+def get_quality_run(run_id: str):
+    run = store.get_quality_run(run_id)
+    if not run:
+        raise HTTPException(404, "run not found")
+    return run
+
+
+@app.post("/api/quality-checks/runs/{run_id}/cancel")
+def cancel_quality_run(run_id: str):
+    if not store.get_quality_run(run_id):
+        raise HTTPException(404, "run not found")
+    ok = store.request_quality_run_cancel(run_id)
+    if not ok:
+        raise HTTPException(409, "run already finished")
+    return {"ok": True}
+
+
+@app.delete("/api/quality-checks/runs/{run_id}")
+def delete_quality_run(run_id: str):
+    if not store.get_quality_run(run_id):
+        raise HTTPException(404, "run not found")
+    store.delete_quality_run(run_id)
     return {"ok": True}
 
 

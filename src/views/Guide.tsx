@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 import {
   LifeBuoy, Rocket, Database, ListChecks, Bot, Table2, Tags, ShieldCheck,
-  Route, Search, Compass, UserCog, Sliders, ChevronRight, Zap, Sparkles,
+  Route, Search, Compass, UserCog, Sliders, ChevronRight, Zap, Sparkles, Microscope,
 } from "lucide-react";
 
 function H3({ children }: { children: ReactNode }) {
@@ -72,9 +72,10 @@ const SECTIONS: Section[] = [
     content: (
       <>
         <P>
-          A connection is one warehouse or file source. Four types are supported: <b>Demo</b> (a synthetic
-          dataset, no setup — the fastest way to try the app), <b>Oracle</b>, <b>ClickHouse</b>, and
-          <b> Frictionless/OKF</b> (importing a <code>datapackage.json</code> instead of connecting live).
+          A connection is one warehouse or file source. Five types are supported: <b>Demo</b> (a synthetic
+          dataset, no setup — the fastest way to try the app), <b>Oracle</b>, <b>ClickHouse</b>,
+          <b> Frictionless/OKF</b> (importing a <code>datapackage.json</code> instead of connecting live), and
+          <b> MCP</b> (pulling data from another application over the Model Context Protocol).
         </P>
         <H3>Adding, editing, testing</H3>
         <Ul>
@@ -83,6 +84,24 @@ const SECTIONS: Section[] = [
             you change credentials or the target host without re-creating the connection and losing its scope.</li>
           <li><b>Test</b> pings the connection without profiling anything.</li>
         </Ul>
+        <H3>MCP sources</H3>
+        <P>
+          The mirror of this app's own MCP exposure (see <b>Administration</b>): instead of DOINg.Catalogue
+          being the server, here it's the <i>client</i>, pulling data out of another application's MCP
+          server. An MCP server has no declared table schema — it exposes arbitrary named tools — so after
+          adding the connection (its Streamable HTTP URL and an optional bearer token), click <b>Map with
+          AI</b> on its card. The local LLM inspects every tool's name, description and input schema, calls
+          the ones it can safely invoke without guessing required arguments, and proposes a table for every
+          tool that returns an enumerable collection of records — with a column for every field it can
+          identify, to maximise how much of the source becomes usable catalog data. Review the proposal
+          (uncheck anything that isn't really tabular) and <b>Apply</b> it; from that point the mapped tables
+          behave exactly like any other source in Discovery, Sources &amp; scope, and the agent pipeline —
+          <b> Run pipeline</b> stays disabled until at least one table has been mapped. Since an MCP tool
+          rarely exposes a true row count, row estimates there are a best-effort approximation, not an exact
+          count. If the server's tools change, <b>Remap with AI</b> proposes a fresh set — this turns red
+          because it can rename or drop tables a previous mapping had, orphaning any scope or profiling done
+          under the old names, so it asks for confirmation first.
+        </P>
         <H3>Running the pipeline</H3>
         <P>
           <b>Run pipeline</b> launches all 6 agents against every table in scope (or the whole source if no
@@ -350,6 +369,53 @@ const SECTIONS: Section[] = [
           recomputed on every QA Reviewer run.
         </P>
         <P>Dismiss an issue with the × if it's been triaged and doesn't need to stay in the list.</P>
+      </>
+    ),
+  },
+  {
+    id: "deep-quality", label: "Data Quality Checks (deep analysis)", icon: Microscope,
+    content: (
+      <>
+        <P>
+          A separate, independent module from the QA Reviewer agent above — instead of auditing metadata
+          against fixed thresholds, it runs its own live statistical analysis directly against the source
+          (numeric outliers, categorical rarity, format-pattern breaks, duplicate rows) and uses the local LLM
+          to decide what's worth checking, follow up on anything surprising, and write the findings up in
+          plain English.
+        </P>
+        <H3>Running an analysis</H3>
+        <Ul>
+          <li>Pick a <b>connection</b> and the specific <b>tables</b> to analyse — nothing outside your selection is touched.</li>
+          <li>Optional <b>focus notes</b> steer the LLM toward specific tables, columns, or concerns
+            ("check payment amounts for fraud-like outliers").</li>
+          <li><b>Thresholds</b> (z-score, IQR multiplier, outlier/duplicate severity cutoffs, sample sizes) have
+            sensible defaults — expand <b>Thresholds → customise</b> to tune them.</li>
+        </Ul>
+        <H3>How the agent reasons — plan, check, adapt, interpret</H3>
+        <Ul>
+          <li><b>Plan</b> — before running anything expensive, the LLM looks at cheap discovery signals (column
+            types, existing functional definitions, PII flags, your focus notes) and decides which checks are
+            worth running on which columns of which tables — skipping ones unlikely to reveal anything, which
+            is what keeps a run on a large warehouse fast.</li>
+          <li><b>Check</b> — the planned statistical checks run directly against the source.</li>
+          <li><b>Adapt</b> — the LLM reviews the first pass of results and can propose a small number of
+            targeted follow-up checks if something looks surprising, before moving on.</li>
+          <li><b>Interpret</b> — for each table, the LLM writes an executive summary and ranks findings by how
+            much they'd surprise someone who knows the dataset well — surfacing what a quick manual look
+            wouldn't easily catch, not just the obvious issues.</li>
+        </Ul>
+        <P>Every phase streams live to the console, and you can <b>cancel</b> a run in progress at any time.</P>
+        <H3>Reading the results &amp; exporting a report</H3>
+        <P>
+          Each table gets a risk badge (low/medium/high) and an executive summary, with its top findings
+          explained in plain language alongside a suggested next step; minor findings collapse into a "more
+          findings" list. Click <b>Export PDF report</b> for a professionally formatted, shareable summary of
+          the whole run — table risk levels, findings, and the LLM's explanations — matching the app's branding.
+        </P>
+        <P>
+          Past reports are kept in the <b>Past reports</b> list on the left so you can revisit or re-export
+          them without recomputing anything.
+        </P>
       </>
     ),
   },

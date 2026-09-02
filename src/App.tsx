@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Database, Table2, GitCompare, Workflow, Bot, Tags,
   Search, Settings as SettingsIcon, Command, Moon, Sun, Sparkles, Cpu,
   CircleDot, Link2, Compass, Library as LibraryIcon, ListChecks, Activity,
-  Plug, Users as UsersIcon, LogOut, Globe2, Route, LifeBuoy,
+  Plug, Users as UsersIcon, LogOut, Globe2, Route, LifeBuoy, Microscope,
 } from "lucide-react";
 import { CatalogProvider, useCatalog } from "./store";
 import { AuthProvider, useAuth } from "./auth";
@@ -30,11 +30,12 @@ import { Domains } from "./views/Domains";
 import { TagsView } from "./views/TagsView";
 import { ImpactAnalysis } from "./views/ImpactAnalysis";
 import { Guide } from "./views/Guide";
+import { QualityChecks } from "./views/QualityChecks";
 
 export type Tab =
   | "overview" | "library" | "connections" | "sources" | "catalog" | "explorer" | "relationships"
   | "lineage" | "impact" | "domains" | "tags" | "agents" | "glossary" | "search" | "settings"
-  | "queries" | "mcp" | "users" | "guide";
+  | "queries" | "mcp" | "users" | "guide" | "quality-checks";
 
 const TABS: { id: Tab; label: string; icon: typeof Database; group?: string; adminOnly?: boolean }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
@@ -51,6 +52,7 @@ const TABS: { id: Tab; label: string; icon: typeof Database; group?: string; adm
   { id: "glossary", label: "Glossary", icon: Tags },
   { id: "agents", label: "Agents", icon: Bot, group: "Run" },
   { id: "search", label: "Search", icon: Search },
+  { id: "quality-checks", label: "Data Quality Checks", icon: Microscope, group: "Quality" },
   { id: "queries", label: "Query Log", icon: Activity, group: "Monitor" },
   { id: "mcp", label: "MCP", icon: Plug, group: "Admin", adminOnly: true },
   { id: "users", label: "Users", icon: UsersIcon, adminOnly: true },
@@ -225,6 +227,7 @@ function Shell() {
               {tab === "agents" && <Agents />}
               {tab === "glossary" && <Glossary />}
               {tab === "search" && <SearchView goto={setTab} />}
+              {tab === "quality-checks" && <QualityChecks />}
               {tab === "queries" && <QueryLog />}
               {tab === "mcp" && user?.role === "admin" && <McpSettings />}
               {tab === "users" && user?.role === "admin" && <Users />}

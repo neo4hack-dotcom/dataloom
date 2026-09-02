@@ -145,7 +145,7 @@ export interface DiscoveredTable {
 export interface Connection {
   id: string;
   name: string;
-  type: "demo" | "oracle" | "clickhouse" | "okf";
+  type: "demo" | "oracle" | "clickhouse" | "okf" | "mcp";
   config: Record<string, unknown>;
   llm_model?: string | null;
   created_at: number;
@@ -155,6 +155,29 @@ export interface Connection {
   scope_row_limits?: Record<string, number>;
   scope_row_counts?: Record<string, number>;
   scope_row_counts_at?: Record<string, number>;
+}
+
+export interface McpTool {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+}
+
+export interface McpMappingColumn {
+  name: string;
+  data_type: string;
+  nullable: boolean;
+  comment?: string;
+}
+
+export interface McpMappingTable {
+  tool: string;
+  table_name: string;
+  schema?: string;
+  comment?: string;
+  row_path?: string;
+  row_estimate?: number;
+  columns: McpMappingColumn[];
 }
 
 export interface MatchPair {
@@ -193,6 +216,82 @@ export interface QaIssue {
   severity: "high" | "medium" | "low";
   dataset_id: string;
   message: string;
+}
+
+// -- Data Quality Checks (independent deep-profiling module) -- //
+export interface QualityThresholds {
+  zscore: number;
+  iqr_multiplier: number;
+  outlier_pct_high: number;
+  duplicate_pct_high: number;
+  categorical_cardinality_max: number;
+  pattern_dominance_min: number;
+  value_sample_size: number;
+  row_sample_size: number;
+}
+
+export interface QualityPlanStep {
+  table: string;
+  columns: string[];
+  checks: string[];
+  reason: string;
+}
+
+export interface QualityPlan {
+  steps: QualityPlanStep[];
+  narrative: string;
+}
+
+export interface QualityFinding {
+  table: string;
+  column: string | null;
+  kind: string;
+  severity: "high" | "medium" | "low";
+  message: string;
+  evidence: Record<string, unknown>;
+}
+
+export interface QualityHighlight {
+  finding_index: number;
+  explanation: string;
+  suggested_action: string;
+}
+
+export interface QualityTableResult {
+  dataset_id: string;
+  name: string;
+  row_estimate: number;
+  findings: QualityFinding[];
+  interpretation: {
+    summary: string;
+    risk_level: "low" | "medium" | "high";
+    highlights: QualityHighlight[];
+  };
+}
+
+export interface QualityRunLog {
+  ts: number;
+  level: string;
+  message: string;
+}
+
+export interface QualityRun {
+  id: string;
+  connection_id: string;
+  scope: Record<string, string[] | null>;
+  thresholds: QualityThresholds;
+  focus_notes: string;
+  status: "queued" | "running" | "done" | "error" | "cancelled";
+  progress: number;
+  phase: "planning" | "checking" | "refining" | "interpreting" | "done" | null;
+  logs: QualityRunLog[];
+  created_at: number;
+  started_at?: number;
+  finished_at?: number;
+  plan: QualityPlan | null;
+  tables: QualityTableResult[];
+  cancel_requested: boolean;
+  error?: string;
 }
 
 export interface GlossaryTerm {

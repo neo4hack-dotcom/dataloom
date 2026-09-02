@@ -1,13 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Database, Plus, Trash2, Zap, Server, Boxes, FlaskConical, Cpu, Check, Package, Link2,
-  Pencil, PlugZap, Loader2, CheckCircle2, XCircle, History,
+  Pencil, PlugZap, Loader2, CheckCircle2, XCircle, History, Plug, Sparkles, X, Table2, Hash,
 } from "lucide-react";
 import { useCatalog } from "../store";
 import { api } from "../api";
 import { EmptyState, timeAgo } from "../lib/ui";
 import { useConfirm } from "../components/ConfirmDialog";
-import type { Connection } from "../types";
+import type { Connection, McpMappingTable, McpTool } from "../types";
 import type { Tab } from "../App";
 
 const TYPE_META: Record<string, { label: string; icon: typeof Server; color: string }> = {
@@ -15,14 +15,16 @@ const TYPE_META: Record<string, { label: string; icon: typeof Server; color: str
   oracle:     { label: "Oracle",           icon: Database,     color: "text-rose-500 bg-rose-500/10" },
   clickhouse: { label: "ClickHouse",       icon: Boxes,        color: "text-amber-500 bg-amber-500/10" },
   okf:        { label: "Frictionless/OKF", icon: Package,      color: "text-teal-500 bg-teal-500/10" },
+  mcp:        { label: "MCP source",       icon: Plug,         color: "text-cyan-500 bg-cyan-500/10" },
 };
 
-type ConnType = "demo" | "oracle" | "clickhouse" | "okf";
+type ConnType = "demo" | "oracle" | "clickhouse" | "okf" | "mcp";
 
 export function Connections({ goto }: { goto: (t: Tab) => void }) {
   const { state, health, mutate, setActiveRun, toast } = useCatalog();
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Connection | null>(null);
+  const [mapping, setMapping] = useState<Connection | null>(null);
   const { confirm, dialog } = useConfirm();
   const [pinging, setPinging] = useState<Record<string, "busy" | "ok" | "fail">>({});
 
@@ -44,6 +46,16 @@ export function Connections({ goto }: { goto: (t: Tab) => void }) {
   };
 
   const remove = async (cid: string) => {
+    const c = conns.find((x) => x.id === cid);
+    const dsCount = state?.datasets.filter((d) => d.connection_id === cid).length ?? 0;
+    const ok = await confirm({
+      title: "Delete this connection?",
+      message: dsCount > 0
+        ? `"${c?.name}" and its ${dsCount} table(s) will be permanently removed — including their definitions, tags, relationships, lineage and QA history. This can't be undone.`
+        : `"${c?.name}" will be permanently removed. This can't be undone.`,
+      tone: "danger", steps: dsCount > 0 ? 2 : 1, confirmLabel: "Delete",
+    });
+    if (!ok) return;
     await mutate((v) => api.deleteConnection(cid, v));
     toast("ok", "Connection removed");
   };
@@ -62,8 +74,8 @@ export function Connections({ goto }: { goto: (t: Tab) => void }) {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <p className="max-w-2xl text-sm text-slate-500">
-          Connect a warehouse or import a <b>Frictionless Data Package</b> (OKF / datapackage.json).
-          Use <b>Demo</b> to explore with a synthetic dataset.
+          Connect a warehouse, import a <b>Frictionless Data Package</b> (OKF / datapackage.json), or pull
+          data from another application over <b>MCP</b>. Use <b>Demo</b> to explore with a synthetic dataset.
         </p>
         <button onClick={() => { setEditing(null); setShowForm((s) => !s); }} className="btn-primary">
           <Plus size={16} /> New connection
@@ -90,6 +102,8 @@ export function Connections({ goto }: { goto: (t: Tab) => void }) {
             const dsCount = state?.datasets.filter((d) => d.connection_id === c.id).length ?? 0;
             const lastRun = state?.runs.find((r) => r.connection_id === c.id);
             const pingState = pinging[c.id];
+            const mcpTables = (c.config?.mcp_mapping as { tables?: McpMappingTable[] } | undefined)?.tables ?? [];
+            const isMcp = c.type === "mcp";
             return (
               <div key={c.id} className="card group p-4">
                 <div className="flex items-start gap-3">
@@ -98,7 +112,9 @@ export function Connections({ goto }: { goto: (t: Tab) => void }) {
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="truncate font-semibold">{c.name}</div>
-                    <div className="text-xs text-slate-400">{Mt.label} · {dsCount} tables · added {timeAgo(c.created_at)}</div>
+                    <div className="text-xs text-slate-400">
+                      {Mt.label} · {isMcp ? `${mcpTables.length} mapped table(s)` : `${dsCount} tables`} · added {timeAgo(c.created_at)}
+                    </div>
                     <div className="mt-0.5 flex items-center gap-1 text-xs text-slate-400">
                       <History size={11} />
                       {lastRun ? <>last run {timeAgo(lastRun.created_at)} ago</> : "never run"}
@@ -111,7 +127,7 @@ export function Connections({ goto }: { goto: (t: Tab) => void }) {
                       className="text-slate-400 hover:text-rose-500" title="Delete"><Trash2 size={16} /></button>
                   </div>
                 </div>
-                <div className="mt-3 flex gap-2">
+                <div className="mt-3 flex flex-wrap gap-2">
                   <button onClick={() => test(c.id)} className="btn-outline !px-2.5 text-xs" title="Test connection">
                     {pingState === "busy" ? <Loader2 size={13} className="animate-spin" /> :
                      pingState === "ok" ? <CheckCircle2 size={13} className="text-emerald-500" /> :
@@ -119,7 +135,14 @@ export function Connections({ goto }: { goto: (t: Tab) => void }) {
                      <PlugZap size={13} />}
                     Test
                   </button>
-                  <button onClick={() => launch(c.id)}
+                  {isMcp && (
+                    <button onClick={() => setMapping(c)}
+                      className={`text-xs ${mcpTables.length > 0 ? "btn-danger" : "btn-ai"}`}>
+                      <Sparkles size={13} /> {mcpTables.length > 0 ? "Remap with AI" : "Map with AI"}
+                    </button>
+                  )}
+                  <button onClick={() => launch(c.id)} disabled={isMcp && mcpTables.length === 0}
+                    title={isMcp && mcpTables.length === 0 ? "Map this MCP source with AI first" : undefined}
                     className={`flex-1 justify-center ${lastRun ? "btn-danger" : "btn-ai"}`}>
                     <Zap size={15} /> Run pipeline
                   </button>
@@ -129,6 +152,7 @@ export function Connections({ goto }: { goto: (t: Tab) => void }) {
           })}
         </div>
       )}
+      {mapping && <McpMappingModal conn={mapping} onClose={() => setMapping(null)} />}
       {dialog}
     </div>
   );
@@ -144,7 +168,8 @@ function ConnectionForm({ mode, initial, models, onDone }: {
   const [flavor, setFlavor] = useState((initial?.config?.flavor as string) ?? "oracle");
   const [cfg, setCfg] = useState<Record<string, string>>(
     initial && initial.type !== "demo" && initial.type !== "okf"
-      ? Object.fromEntries(Object.entries(initial.config).map(([k, v]) => [k, String(v ?? "")]))
+      ? Object.fromEntries(Object.entries(initial.config)
+          .filter(([k]) => k !== "mcp_mapping").map(([k, v]) => [k, String(v ?? "")]))
       : {});
   const [model, setModel] = useState(initial?.llm_model ?? "");
   const [okfMode, setOkfMode] = useState<"url" | "paste">("url");
@@ -160,12 +185,16 @@ function ConnectionForm({ mode, initial, models, onDone }: {
     else if (effectiveType === "okf") {
       if (okfMode === "url") config = { url: okfUrl.trim() };
       else { try { config = { content: JSON.parse(okfJson) }; } catch { toast("err", "Invalid JSON"); return; } }
+    } else if (effectiveType === "mcp") {
+      // never clobber a previously-applied AI mapping just by editing the URL/token
+      config = { url: (cfg.url ?? "").trim(), token: cfg.token || undefined,
+        ...(initial?.config?.mcp_mapping ? { mcp_mapping: initial.config.mcp_mapping } : {}) };
     } else {
       config = cfg;
     }
     if (mode === "add") {
       const r = await mutate((v) => api.addConnection({
-        name: name || (effectiveType === "demo" ? `Demo ${flavor}` : effectiveType === "okf" ? "Frictionless Package" : effectiveType),
+        name: name || (effectiveType === "demo" ? `Demo ${flavor}` : effectiveType === "okf" ? "Frictionless Package" : effectiveType === "mcp" ? "MCP source" : effectiveType),
         type: effectiveType, config, llm_model: model || null,
       }, v));
       if (r) { toast("ok", "Connection added"); onDone(); }
@@ -180,8 +209,8 @@ function ConnectionForm({ mode, initial, models, onDone }: {
   return (
     <div className="card animate-fade-in space-y-4 p-5">
       {/* type selector — locked once a connection exists (editing) */}
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-        {(["demo", "oracle", "clickhouse", "okf"] as ConnType[]).map((t) => {
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
+        {(["demo", "oracle", "clickhouse", "okf", "mcp"] as ConnType[]).map((t) => {
           const Mt = TYPE_META[t];
           const Icon = Mt.icon;
           const active = effectiveType === t;
@@ -208,7 +237,8 @@ function ConnectionForm({ mode, initial, models, onDone }: {
           <input className="input" value={name} onChange={(e) => setName(e.target.value)}
             placeholder={
               effectiveType === "demo" ? `Demo ${flavor}` :
-              effectiveType === "okf" ? "Frictionless Package" : "My warehouse"} />
+              effectiveType === "okf" ? "Frictionless Package" :
+              effectiveType === "mcp" ? "My app's MCP server" : "My warehouse"} />
         </label>
 
         {effectiveType === "demo" && (
@@ -238,6 +268,13 @@ function ConnectionForm({ mode, initial, models, onDone }: {
             <Field label="Username" k="user" cfg={cfg} setCfg={setCfg} ph="default" />
             <Field label="Password" k="password" cfg={cfg} setCfg={setCfg} type="password" />
             <Field label="Database" k="database" cfg={cfg} setCfg={setCfg} ph="analytics" />
+          </>
+        )}
+        {effectiveType === "mcp" && (
+          <>
+            <Field label="MCP server URL (Streamable HTTP)" k="url" cfg={cfg} setCfg={setCfg}
+              ph="http://localhost:8000/mcp/" />
+            <Field label="Bearer token (optional)" k="token" cfg={cfg} setCfg={setCfg} type="password" />
           </>
         )}
 
@@ -280,12 +317,156 @@ function ConnectionForm({ mode, initial, models, onDone }: {
         </div>
       )}
 
+      {/* MCP-specific note */}
+      {effectiveType === "mcp" && (
+        <div className="rounded-lg border border-cyan-200 bg-cyan-50/30 p-4 text-xs text-slate-500 dark:border-cyan-800/40 dark:bg-cyan-900/10">
+          Connects to another application's MCP server as a data source — the mirror of this app's own MCP
+          exposure in Settings. An MCP server has no declared table schema, so after adding the connection
+          use <b>Map with AI</b> on its card: the local LLM inspects the server's tools and proposes a
+          table/column mapping (grounded in a live sample where it can safely call one), which you review
+          before it feeds the normal Discovery → Sources &amp; scope → Agents pipeline.
+        </div>
+      )}
+
       <div className="flex justify-end gap-2">
         <button onClick={onDone} className="btn-outline">Cancel</button>
         <button onClick={submit} className="btn-primary">
           {mode === "add" ? <><Plus size={15} /> Add</> : <><Check size={15} /> Save</>}
         </button>
       </div>
+    </div>
+  );
+}
+
+// ---- MCP source: discover tools + preview/apply the LLM-proposed mapping -- //
+function McpMappingModal({ conn, onClose }: { conn: Connection; onClose: () => void }) {
+  const { mutate, toast } = useCatalog();
+  const { confirm, dialog } = useConfirm();
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+  const [tools, setTools] = useState<McpTool[]>([]);
+  const [proposed, setProposed] = useState<McpMappingTable[]>([]);
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  const [applying, setApplying] = useState(false);
+
+  const existingTables = (conn.config?.mcp_mapping as { tables?: McpMappingTable[] } | undefined)?.tables ?? [];
+
+  const load = async () => {
+    setLoading(true); setFailed(false);
+    try {
+      const r = await api.mcpDiscoverMapping(conn.id);
+      setTools(r.tools);
+      setProposed(r.mapping.tables);
+      setExcluded(new Set());
+    } catch (e) {
+      setFailed(true);
+      toast("err", (e as Error).message.includes("503") ? "Local LLM unavailable" : "MCP discovery failed");
+    } finally { setLoading(false); }
+  };
+
+  useEffect(() => {
+    (async () => {
+      if (existingTables.length > 0) {
+        const ok = await confirm({
+          title: "Re-map this MCP source?",
+          message: `This connection already has ${existingTables.length} mapped table(s). Re-mapping proposes a fresh set from the server's current tools — table names may change, which can orphan any scope or profiling done under the old ones.`,
+          tone: "warning", steps: 1, confirmLabel: "Discover again",
+        });
+        if (!ok) { onClose(); return; }
+      }
+      load();
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const toggle = (name: string) => setExcluded((s) => {
+    const n = new Set(s);
+    if (n.has(name)) n.delete(name); else n.add(name);
+    return n;
+  });
+
+  const toApply = proposed.filter((t) => !excluded.has(t.table_name));
+
+  const apply = async () => {
+    setApplying(true);
+    try {
+      const r = await mutate((v) => api.mcpApplyMapping(conn.id, toApply, v));
+      if (r) toast("ok", `${toApply.length} table(s) mapped ✓`);
+      onClose();
+    } finally { setApplying(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="mb-1 flex items-center gap-2">
+          <Sparkles size={18} className="text-loom-500" />
+          <h3 className="font-semibold">Map "{conn.name}" with AI</h3>
+          <button onClick={onClose} className="btn-ghost ml-auto !p-1"><X size={16} /></button>
+        </div>
+
+        {loading ? (
+          <div className="grid flex-1 place-items-center py-10 text-slate-400">
+            <div className="flex items-center gap-2"><Loader2 className="animate-spin" /> Discovering tools &amp; sampling…</div>
+          </div>
+        ) : failed ? (
+          <div className="py-8 text-center text-sm text-slate-400">
+            Couldn't map this source. <button onClick={load} className="text-loom-500 underline">Try again</button>
+          </div>
+        ) : (
+          <>
+            <p className="mb-2 text-xs text-slate-400">
+              {tools.length} tool{tools.length === 1 ? "" : "s"} found on the server ·{" "}
+              {proposed.length} proposed as table{proposed.length === 1 ? "" : "s"}. Uncheck any you don't want in the catalog.
+            </p>
+            <div className="min-h-0 flex-1 space-y-1.5 overflow-auto rounded-lg border border-slate-200 p-2 dark:border-slate-800">
+              {proposed.length === 0 ? (
+                <div className="py-6 text-center text-sm text-slate-400">
+                  No tabular tools identified — this server may only expose actions, not listable data.
+                </div>
+              ) : proposed.map((t) => {
+                const isOn = !excluded.has(t.table_name);
+                return (
+                  <label key={t.table_name}
+                    className={`flex items-start gap-2 rounded-lg border p-2 text-xs ${
+                      isOn ? "border-loom-500/30 bg-loom-500/5" : "border-slate-200 opacity-50 dark:border-slate-800"}`}>
+                    <input type="checkbox" checked={isOn} onChange={() => toggle(t.table_name)} className="mt-0.5" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 font-mono font-semibold">
+                        <Table2 size={12} className="shrink-0 text-loom-500" /> {t.schema || "MCP"}.{t.table_name}
+                        <span className="chip shrink-0 bg-slate-500/10 text-slate-400 normal-case">via {t.tool}</span>
+                        {typeof t.row_estimate === "number" && (
+                          <span className="chip shrink-0 bg-slate-500/10 text-slate-400 normal-case">~{t.row_estimate} rows</span>
+                        )}
+                      </div>
+                      {t.comment && <div className="mt-0.5 text-slate-500">{t.comment}</div>}
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {t.columns.slice(0, 8).map((c) => (
+                          <span key={c.name} className="chip bg-slate-500/10 text-slate-400"><Hash size={9} /> {c.name}</span>
+                        ))}
+                        {t.columns.length > 8 && (
+                          <span className="chip bg-slate-500/10 text-slate-400">+{t.columns.length - 8} more</span>
+                        )}
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button onClick={load} disabled={applying} className="btn-ai-outline text-xs">
+                <Sparkles size={13} /> Re-discover
+              </button>
+              <button onClick={apply} disabled={applying || toApply.length === 0} className="btn-ai flex-1 justify-center text-xs">
+                {applying ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                Apply {toApply.length} table{toApply.length === 1 ? "" : "s"}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+      {dialog}
     </div>
   );
 }

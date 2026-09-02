@@ -660,6 +660,75 @@ class OKFConnector(Connector):
 
 
 # --------------------------------------------------------------------------- #
+#  MCP connector — another application's MCP server as a data source.        #
+#                                                                              #
+#  An MCP server has no declared table/column schema: it exposes arbitrary   #
+#  named tools. `mcp_mapping` (config key) is how the tool surface becomes a #
+#  table/column inventory — an LLM-assisted step (engine.explore.            #
+#  map_mcp_tools, triggered once from the UI) proposes it, a human reviews   #
+#  and applies it, and it's cached in the connection's config from then on — #
+#  this connector never calls the LLM itself, only the already-mapped tools. #
+# --------------------------------------------------------------------------- #
+class MCPConnector(Connector):
+    kind = "mcp"
+
+    def __init__(self, url: str, token: str | None, mapping: dict[str, Any] | None):
+        self._url = url
+        self._token = token
+        self._tables = {t["table_name"]: t for t in (mapping or {}).get("tables", [])}
+
+    def list_tables(self) -> list[dict[str, Any]]:
+        return [{"schema": t.get("schema") or "MCP", "name": t["table_name"], "kind": "table",
+                 "row_estimate": t.get("row_estimate") or 0, "comment": t.get("comment")}
+                for t in self._tables.values()]
+
+    def get_columns(self, schema: str, table: str) -> list[dict[str, Any]]:
+        t = self._tables.get(table)
+        if not t:
+            return []
+        return [{"name": c["name"], "data_type": c.get("data_type") or "VARCHAR",
+                 "nullable": c.get("nullable", True), "position": i + 1,
+                 "comment": c.get("comment")}
+                for i, c in enumerate(t.get("columns", []))]
+
+    def _fetch(self, table: str, limit: int) -> tuple[list[dict[str, Any]], int | None]:
+        t = self._tables.get(table)
+        if not t:
+            return [], None
+        from . import mcp_client
+        result = mcp_client.call_tool_sync(self._url, self._token, t["tool"], t.get("args") or {})
+        raw = mcp_client.extract_records(result, t.get("row_path"))
+        col_names = [c["name"] for c in t.get("columns", [])]
+        records = [self._normalize(r, col_names) for r in raw[:limit]]
+        return records, mcp_client.extract_total(result)
+
+    @staticmethod
+    def _normalize(row: dict[str, Any], col_names: list[str]) -> dict[str, Any]:
+        """Re-key a raw JSON record onto the mapping's declared column names.
+        The LLM-authored mapping is instructed to copy field names exactly,
+        but a case/formatting slip would otherwise make profiling see an
+        all-NULL column, so this tolerates a case-insensitive match too."""
+        lower_row = {k.lower(): v for k, v in row.items()}
+        return {name: row[name] if name in row else lower_row.get(name.lower())
+                for name in col_names}
+
+    def sample_values(self, schema: str, table: str, column: str, limit: int = 2000) -> list[Any]:
+        rows, _ = self._fetch(table, limit)
+        return [r[column] for r in rows if r.get(column) is not None]
+
+    def sample_rows(self, schema: str, table: str, limit: int = 500) -> list[dict[str, Any]]:
+        rows, _ = self._fetch(table, limit)
+        return rows
+
+    def count_rows(self, schema: str, table: str) -> int | None:
+        """Best-effort: the tool's declared total if it reports one, else the
+        size of the page we can actually read — an approximation flagged as
+        such in the UI, since most MCP tools don't expose a true COUNT."""
+        rows, total = self._fetch(table, 5000)
+        return total if total is not None else len(rows)
+
+
+# --------------------------------------------------------------------------- #
 #  TrackedConnector — wraps any Connector with query-registry tracking,       #
 #  cross-thread cancellation and an admin-configurable row-fetch limit.       #
 # --------------------------------------------------------------------------- #
@@ -738,6 +807,8 @@ def _build_raw_connector(conn: dict[str, Any]) -> Connector:
     if t == "clickhouse":
         return ClickHouseConnector(cfg["host"], int(cfg.get("port", 8123)),
                                    cfg["user"], cfg.get("password", ""), cfg["database"])
+    if t == "mcp":
+        return MCPConnector(cfg["url"], cfg.get("token") or None, cfg.get("mcp_mapping"))
     raise ValueError(f"Unknown connector type: {t}")
 
 
