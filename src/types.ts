@@ -155,6 +155,10 @@ export interface Connection {
   scope_row_limits?: Record<string, number>;
   scope_row_counts?: Record<string, number>;
   scope_row_counts_at?: Record<string, number>;
+  // MCP Library — full raw tool inventory + pasted code/SQL query definitions
+  mcp_tools?: McpTool[];
+  mcp_tools_at?: number;
+  mcp_queries?: McpQueryDef[];
 }
 
 export interface McpTool {
@@ -178,6 +182,59 @@ export interface McpMappingTable {
   row_path?: string;
   row_estimate?: number;
   columns: McpMappingColumn[];
+}
+
+// -- MCP Library: code/SQL-grounded query documentation -- //
+export interface McpQueryTableRef {
+  name: string;
+  role: "source" | "target";
+}
+
+export interface McpQueryColumnInfo {
+  name: string;
+  description: string;
+  source_expression?: string;
+}
+
+export interface McpQueryReconciliation {
+  column: string;
+  status: string; // "matches" | "only_in_code" | "only_in_mapping"
+  note: string;
+}
+
+export interface McpLinkCandidate {
+  dataset_id: string;
+  label: string;
+  matched_table: string;
+  score: number;
+}
+
+export interface McpQueryExtraction {
+  functional_description: string;
+  tables_referenced: McpQueryTableRef[];
+  columns: McpQueryColumnInfo[];
+  column_reconciliation: McpQueryReconciliation[];
+  link_candidates: McpLinkCandidate[];
+}
+
+export interface McpQueryDef {
+  id: string;
+  tool: string;
+  title: string;
+  language: "sql" | "code";
+  code: string;
+  extraction: McpQueryExtraction | null;
+  created_at: number;
+  extracted_at?: number;
+}
+
+export interface McpCoverageGap {
+  tool: string;
+  description: string;
+  has_mapping: boolean;
+  has_query: boolean;
+  priority: number;
+  reason: string;
 }
 
 export interface MatchPair {

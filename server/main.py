@@ -19,7 +19,7 @@ from typing import Any
 
 import auth
 from store import Store
-from engine import llm, agents, explore, mcp_client, quality_checks
+from engine import llm, agents, explore, mcp_client, quality_checks, mcp_library
 from engine import search as search_engine
 from engine.connectors import build_connector
 from engine.query_registry import registry as query_registry, QueryCancelled
@@ -457,6 +457,107 @@ def mcp_apply_mapping(cid: str, body: McpMappingIn, x_base_version: int | None =
     config = {**conn.get("config", {}), "mcp_mapping": {"tables": body.tables, "mapped_at": time.time()}}
     conn = store.update_connection(cid, {"config": config})
     return {"ok": True, "connection": conn, "version": store.version}
+
+
+# -- MCP Library: full tool inventory + pasted code/SQL extraction ----------- #
+@app.post("/api/connections/{cid}/mcp/tools")
+def mcp_refresh_tools(cid: str, x_base_version: int | None = Header(default=None)):
+    """Rediscover and persist the MCP server's FULL tool inventory (every
+    tool, not just the ones proposed as tables) so the MCP Library can browse
+    it — including action/write tools — without re-hitting the remote server."""
+    guard(x_base_version)
+    conn = store.get_connection(cid)
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    if conn.get("type") != "mcp":
+        raise HTTPException(400, "not an MCP connection")
+    cfg = conn.get("config", {})
+    url = cfg.get("url")
+    if not url:
+        raise HTTPException(400, "connection has no MCP url configured")
+    try:
+        tools = mcp_client.discover_sync(url, cfg.get("token") or None)
+    except Exception as e:
+        raise HTTPException(422, f"MCP discovery failed: {e}")
+    store.set_mcp_tools(cid, tools)
+    return {"ok": True, "tools": tools, "version": store.version}
+
+
+@app.get("/api/connections/{cid}/mcp/coverage")
+def mcp_coverage(cid: str):
+    conn = store.get_connection(cid)
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    return {"ok": True, "gaps": mcp_library.coverage_gaps(conn)}
+
+
+def _run_mcp_extraction(cid: str, conn: dict[str, Any], entry: dict[str, Any]):
+    tool_meta = next((t for t in conn.get("mcp_tools") or [] if t.get("name") == entry["tool"]), None)
+    mapped = next((t for t in ((conn.get("config") or {}).get("mcp_mapping") or {}).get("tables", [])
+                  if t.get("tool") == entry["tool"]), None)
+    mapped_columns = [c["name"] for c in mapped["columns"]] if mapped else None
+    try:
+        extraction = mcp_library.extract_query_info(
+            entry["tool"], (tool_meta or {}).get("description", ""), entry["language"], entry["code"],
+            mapped_columns=mapped_columns, model=conn.get("llm_model") or _llm_model())
+    except mcp_library.LLMUnavailable:
+        raise HTTPException(503, "Local LLM unavailable")
+    snap = store.snapshot()
+    extraction["link_candidates"] = mcp_library.match_link_candidates(
+        snap, extraction.get("tables_referenced", []), cid)
+    # mutates `entry` in place (same dict object stored on the connection)
+    store.update_mcp_query(cid, entry["id"], {"extraction": extraction, "extracted_at": time.time()})
+
+
+class McpQueryIn(BaseModel):
+    tool: str
+    title: str = ""
+    language: str = "sql"  # sql | code
+    code: str
+
+
+@app.post("/api/connections/{cid}/mcp/queries")
+def mcp_add_query(cid: str, body: McpQueryIn, x_base_version: int | None = Header(default=None)):
+    """Paste the real SQL/code behind an MCP tool — the local LLM extracts a
+    functional description, the tables/columns it actually touches, and (if
+    that tool is already mapped) reconciles the code against the mapped
+    columns, catching drift a human skimming a live sample could easily miss.
+    Also proposes cross-connection lineage link candidates from the
+    referenced table names."""
+    guard(x_base_version)
+    conn = store.get_connection(cid)
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    if conn.get("type") != "mcp":
+        raise HTTPException(400, "not an MCP connection")
+    entry = store.add_mcp_query(cid, {
+        "tool": body.tool, "title": body.title or body.tool,
+        "language": body.language, "code": body.code, "extraction": None,
+    })
+    _run_mcp_extraction(cid, conn, entry)
+    return {"ok": True, "query": entry, "version": store.version}
+
+
+@app.post("/api/connections/{cid}/mcp/queries/{qid}/reextract")
+def mcp_reextract_query(cid: str, qid: str, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    conn = store.get_connection(cid)
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    entry = next((q for q in conn.get("mcp_queries", []) if q["id"] == qid), None)
+    if not entry:
+        raise HTTPException(404, "query not found")
+    _run_mcp_extraction(cid, conn, entry)
+    return {"ok": True, "query": entry, "version": store.version}
+
+
+@app.delete("/api/connections/{cid}/mcp/queries/{qid}")
+def mcp_delete_query(cid: str, qid: str, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    if not store.get_connection(cid):
+        raise HTTPException(404, "connection not found")
+    store.delete_mcp_query(cid, qid)
+    return {"ok": True, "version": store.version}
 
 
 class ScopeIn(BaseModel):

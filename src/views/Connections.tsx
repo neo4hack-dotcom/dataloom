@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   Database, Plus, Trash2, Zap, Server, Boxes, FlaskConical, Cpu, Check, Package, Link2,
   Pencil, PlugZap, Loader2, CheckCircle2, XCircle, History, Plug, Sparkles, X, Table2, Hash,
+  BookMarked,
 } from "lucide-react";
 import { useCatalog } from "../store";
 import { api } from "../api";
@@ -139,6 +140,11 @@ export function Connections({ goto }: { goto: (t: Tab) => void }) {
                     <button onClick={() => setMapping(c)}
                       className={`text-xs ${mcpTables.length > 0 ? "btn-danger" : "btn-ai"}`}>
                       <Sparkles size={13} /> {mcpTables.length > 0 ? "Remap with AI" : "Map with AI"}
+                    </button>
+                  )}
+                  {isMcp && (
+                    <button onClick={() => goto("mcp-library")} className="btn-outline !px-2.5 text-xs" title="Browse tools, queries & coverage">
+                      <BookMarked size={13} /> Library
                     </button>
                   )}
                   <button onClick={() => launch(c.id)} disabled={isMcp && mcpTables.length === 0}

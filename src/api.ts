@@ -1,6 +1,7 @@
 import type {
   AgentRun, AlertSettings, CatalogState, ColumnLineageEdge, Connection, ConnectorSettings, DiscoveredTable, Domain, Health,
-  LlmConfig, LlmTest, McpConfig, McpMappingTable, McpTool, Owner, QualityRun, QualityThresholds, QueryLogEntry, SearchHit, User,
+  LlmConfig, LlmTest, McpConfig, McpCoverageGap, McpMappingTable, McpQueryDef, McpTool, Owner, QualityRun, QualityThresholds,
+  QueryLogEntry, SearchHit, User,
 } from "./types";
 
 export class VersionConflict extends Error {
@@ -80,6 +81,22 @@ export const api = {
   mcpApplyMapping: (cid: string, tables: McpMappingTable[], baseVersion: number) =>
     req<{ ok: boolean; connection: Connection; version: number }>(
       `/connections/${cid}/mcp/mapping`, { method: "POST", body: JSON.stringify({ tables }), baseVersion }),
+
+  // -- MCP Library: full tool inventory + pasted code/SQL extraction --
+  mcpRefreshTools: (cid: string, baseVersion: number) =>
+    req<{ ok: boolean; tools: McpTool[]; version: number }>(
+      `/connections/${cid}/mcp/tools`, { method: "POST", baseVersion }),
+  mcpCoverage: (cid: string) =>
+    req<{ ok: boolean; gaps: McpCoverageGap[] }>(`/connections/${cid}/mcp/coverage`),
+  mcpAddQuery: (cid: string, body: { tool: string; title?: string; language: "sql" | "code"; code: string }, baseVersion: number) =>
+    req<{ ok: boolean; query: McpQueryDef; version: number }>(
+      `/connections/${cid}/mcp/queries`, { method: "POST", body: JSON.stringify(body), baseVersion }),
+  mcpReextractQuery: (cid: string, qid: string, baseVersion: number) =>
+    req<{ ok: boolean; query: McpQueryDef; version: number }>(
+      `/connections/${cid}/mcp/queries/${qid}/reextract`, { method: "POST", baseVersion }),
+  mcpDeleteQuery: (cid: string, qid: string, baseVersion: number) =>
+    req<{ ok: boolean; version: number }>(
+      `/connections/${cid}/mcp/queries/${qid}`, { method: "DELETE", baseVersion }),
 
   // -- discovery & scope (big-volume sources) --
   discover: (cid: string, baseVersion: number) =>
