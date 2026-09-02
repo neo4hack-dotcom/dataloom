@@ -33,12 +33,13 @@ import { Guide } from "./views/Guide";
 import { QualityChecks } from "./views/QualityChecks";
 import { McpLibrary } from "./views/McpLibrary";
 import { CatalogGraph } from "./views/CatalogGraph";
+import { Enrichment } from "./views/Enrichment";
 import { NotificationBell } from "./components/NotificationBell";
 
 export type Tab =
   | "overview" | "library" | "connections" | "sources" | "catalog" | "explorer" | "relationships"
   | "lineage" | "impact" | "domains" | "tags" | "agents" | "glossary" | "search" | "settings"
-  | "queries" | "mcp" | "users" | "guide" | "quality-checks" | "mcp-library" | "catalog-graph";
+  | "queries" | "mcp" | "users" | "guide" | "quality-checks" | "mcp-library" | "catalog-graph" | "enrichment";
 
 const TABS: { id: Tab; label: string; icon: typeof Database; group?: string; adminOnly?: boolean }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
@@ -55,7 +56,8 @@ const TABS: { id: Tab; label: string; icon: typeof Database; group?: string; adm
   { id: "domains", label: "Domains", icon: Globe2, group: "Governance" },
   { id: "tags", label: "Tags", icon: Tags },
   { id: "glossary", label: "Glossary", icon: Tags },
-  { id: "agents", label: "Agents", icon: Bot, group: "Run" },
+  { id: "enrichment", label: "AI Enrichment", icon: Sparkles, group: "Run" },
+  { id: "agents", label: "Agents", icon: Bot },
   { id: "search", label: "Search", icon: Search },
   { id: "quality-checks", label: "Data Quality Checks", icon: Microscope, group: "Quality" },
   { id: "queries", label: "Query Log", icon: Activity, group: "Monitor" },
@@ -232,6 +234,7 @@ function Shell() {
               {tab === "lineage" && <Lineage />}
               {tab === "impact" && <ImpactAnalysis />}
               {tab === "catalog-graph" && <CatalogGraph />}
+              {tab === "enrichment" && <Enrichment />}
               {tab === "domains" && <Domains goto={setTab} />}
               {tab === "tags" && <TagsView goto={setTab} />}
               {tab === "agents" && <Agents />}

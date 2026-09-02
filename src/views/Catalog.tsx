@@ -183,14 +183,13 @@ function AddTableHint() {
 }
 
 // ---- Table detail --------------------------------------------------------- //
-type EntityTab = "overview" | "schema" | "lineage" | "quality" | "properties" | "docs";
+type EntityTab = "identity" | "schema" | "lineage" | "quality" | "properties";
 const ENTITY_TABS: { id: EntityTab; label: string; icon: typeof LayoutDashboard }[] = [
-  { id: "overview", label: "Overview", icon: LayoutDashboard },
+  { id: "identity", label: "Identity Card", icon: IdCard },
   { id: "schema", label: "Schema", icon: Columns3 },
   { id: "lineage", label: "Lineage", icon: GitCompare },
   { id: "quality", label: "Quality", icon: ShieldAlert },
   { id: "properties", label: "Properties", icon: Settings2 },
-  { id: "docs", label: "Documentation", icon: BookOpen },
 ];
 
 function TableDetail({ ds, onSelectCol, selCol, goto }: {
@@ -199,7 +198,7 @@ function TableDetail({ ds, onSelectCol, selCol, goto }: {
   const { state, health, mutate, setFocusDataset, toast } = useCatalog();
   const doc = state?.docs[ds.id];
   const llmUp = health?.llm.up ?? false;
-  const [tab, setTab] = useState<EntityTab>("overview");
+  const [tab, setTab] = useState<EntityTab>("identity");
   const [editingMeta, setEditingMeta] = useState(false);
   const [metaDef, setMetaDef] = useState(doc?.definition ?? "");
   const [metaDomain, setMetaDomain] = useState(doc?.domain ?? "");
@@ -211,7 +210,7 @@ function TableDetail({ ds, onSelectCol, selCol, goto }: {
   const [depReplacement, setDepReplacement] = useState("");
 
   useEffect(() => {
-    setTab("overview"); setDeprecating(false);
+    setTab("identity"); setDeprecating(false);
     api.recordDatasetView(ds.id).catch(() => {});
   }, [ds.id]);
 
@@ -369,7 +368,27 @@ function TableDetail({ ds, onSelectCol, selCol, goto }: {
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
-        {tab === "overview" && <OverviewTabContent ds={ds} doc={doc} health={health_} />}
+        {tab === "identity" && (
+          <div>
+            <OverviewTabContent ds={ds} doc={doc} health={health_} />
+            <div className="border-t border-slate-200 px-4 py-3 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  <BookOpen size={12} /> Column documentation
+                </span>
+                {doc?.llm_table_suggestion && (
+                  <span className="chip bg-flame-500/10 text-flame-500 normal-case">AI suggestion stored</span>
+                )}
+                <button onClick={() => setAutoDocOpen(true)} disabled={!llmUp}
+                  className={`ml-auto !py-1 text-xs ${doc?.llm_table_suggestion ? "btn-danger" : "btn-ai"}`}
+                  title="Auto-document every column at once">
+                  <Wand2 size={12} /> {doc?.llm_table_suggestion ? "Review suggestion" : "Auto-document table"}
+                </button>
+              </div>
+            </div>
+            <TableIdentity ds={ds} />
+          </div>
+        )}
         {tab === "schema" && (
           <SchemaTabContent ds={ds} doc={doc} selCol={selCol} onSelectCol={onSelectCol} delCol={delCol}
             addingCol={addingCol} setAddingCol={setAddingCol} newCol={newCol} setNewCol={setNewCol} addCol={addCol} />
@@ -377,17 +396,6 @@ function TableDetail({ ds, onSelectCol, selCol, goto }: {
         {tab === "lineage" && <LineageTabContent ds={ds} goto={goto} onSelectCol={onSelectCol} />}
         {tab === "quality" && <QualityTabContent health={health_} />}
         {tab === "properties" && <PropertiesTabContent ds={ds} doc={doc} />}
-        {tab === "docs" && (
-          <div>
-            <div className="flex justify-end p-3 pb-0">
-              <button onClick={() => setAutoDocOpen(true)} disabled={!llmUp}
-                className="btn-ai-outline !py-1 text-xs" title="Auto-document every column at once">
-                <Wand2 size={13} /> Auto-document table
-              </button>
-            </div>
-            <TableIdentity ds={ds} />
-          </div>
-        )}
       </div>
       {autoDocOpen && <AutoDocModal ds={ds} doc={doc} onClose={() => setAutoDocOpen(false)} />}
     </div>
@@ -1120,7 +1128,7 @@ function TableIdentity({ ds }: { ds: Dataset }) {
   const { state, health, mutate, toast } = useCatalog();
   const { confirm, dialog } = useConfirm();
   const doc = state?.docs[ds.id];
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const [synthLoading, setSynthLoading] = useState(false);
   const [mapOpen, setMapOpen] = useState(false);
   const llmUp = health?.llm.up ?? false;
@@ -1167,7 +1175,7 @@ function TableIdentity({ ds }: { ds: Dataset }) {
     <div className="border-b border-slate-200 dark:border-slate-800">
       <button onClick={() => setOpen((o) => !o)}
         className="flex w-full items-center gap-2 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/40">
-        <IdCard size={14} className="text-loom-500" /> Identity card & synthesis
+        <IdCard size={14} className="text-loom-500" /> Content synthesis & partitioning
         {synth && <span className="chip bg-emerald-500/10 text-emerald-500 normal-case">stored</span>}
         {isMappingLike && <span className="chip bg-flame-500/10 text-flame-400 normal-case">looks like a mapping table</span>}
         <span className="ml-auto">{open ? "−" : "+"}</span>
