@@ -2,14 +2,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Microscope, Loader2, ChevronDown, ChevronRight, AlertTriangle, CheckCircle2,
   XCircle, MinusCircle, OctagonX, FileDown, Trash2, Sparkles, Settings2, Table2,
-  Wrench, History, Zap, ListChecks, Terminal,
+  Wrench, History, Zap, ListChecks, Terminal, MessageCircleQuestion, Send,
 } from "lucide-react";
-import jsPDF from "jspdf";
-import html2canvas from "html2canvas";
 import { useCatalog } from "../store";
 import { api } from "../api";
 import { EmptyState, shortDs, timeAgo } from "../lib/ui";
 import { useConfirm } from "../components/ConfirmDialog";
+import { renderHtmlToPDF, escHtml, reportHeader, reportFooter, REPORT_FONT } from "../lib/pdfExport";
 import type { QualityRun, QualityThresholds, QualityTableResult, QualityFinding } from "../types";
 
 const DEFAULT_THRESHOLDS: QualityThresholds = {
@@ -43,6 +42,8 @@ export function QualityChecks() {
   const [history, setHistory] = useState<Omit<QualityRun, "tables" | "logs">[]>([]);
   const [launching, setLaunching] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [answerText, setAnswerText] = useState("");
+  const [answering, setAnswering] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
 
   const tablesForConn = useMemo(
@@ -69,10 +70,22 @@ export function QualityChecks() {
           else toast("err", "Analysis failed");
         }
       } catch { /* ignore transient poll errors */ }
-    }, 800);
+    }, run.status === "waiting_input" ? 2500 : 800);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run?.id, run?.status]);
+
+  const submitAnswer = async () => {
+    if (!run || !answerText.trim()) return;
+    setAnswering(true);
+    try {
+      await api.answerQualityRun(run.id, answerText.trim());
+      setAnswerText("");
+      toast("ok", "Answer sent — the agent will resume");
+      setRun(await api.getQualityRun(run.id));
+    } catch (e) { toast("err", (e as Error).message); }
+    finally { setAnswering(false); }
+  };
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -128,7 +141,7 @@ export function QualityChecks() {
     } finally { setExporting(false); }
   };
 
-  const running = !!run && (run.status === "running" || run.status === "queued");
+  const running = !!run && (run.status === "running" || run.status === "queued" || run.status === "waiting_input");
   const totalFindings = run?.status === "done" ? run.tables.reduce((s, t) => s + t.findings.length, 0) : 0;
   const highCount = run?.status === "done" ? run.tables.filter((t) => t.interpretation.risk_level === "high").length : 0;
 
@@ -248,7 +261,9 @@ export function QualityChecks() {
           <div className="card flex flex-col overflow-hidden">
             <div className="flex items-center gap-2 border-b border-slate-200 px-4 py-3 dark:border-slate-800">
               <Terminal size={16} className="text-loom-500" />
-              <span className="text-sm font-semibold">{PHASE_LABEL[run.phase ?? "planning"] ?? "Working…"}</span>
+              <span className="text-sm font-semibold">
+                {run.status === "waiting_input" ? "Waiting for your input…" : PHASE_LABEL[run.phase ?? "planning"] ?? "Working…"}
+              </span>
               <button onClick={cancel} className="btn-outline ml-auto !px-2.5 !py-1 text-xs text-rose-500 hover:bg-rose-500/10">
                 <OctagonX size={12} /> Cancel
               </button>
@@ -262,6 +277,27 @@ export function QualityChecks() {
             {run.plan?.narrative && (
               <div className="mx-4 mt-3 flex items-start gap-1.5 rounded-lg border border-loom-500/30 bg-loom-500/5 p-2.5 text-xs text-slate-600 dark:text-slate-300">
                 <Sparkles size={13} className="mt-0.5 shrink-0 text-loom-500" /> {run.plan.narrative}
+              </div>
+            )}
+            {run.status === "waiting_input" && run.pending_question && (
+              <div className="mx-4 mt-3 space-y-2 rounded-lg border border-amber-400/40 bg-amber-500/5 p-3">
+                <div className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-300">
+                  <MessageCircleQuestion size={16} className="mt-0.5 shrink-0" />
+                  <span><b>The agent needs your input:</b> {run.pending_question}</span>
+                </div>
+                <div className="flex gap-2">
+                  <input className="input !py-1.5 text-xs" value={answerText}
+                    onChange={(e) => setAnswerText(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && submitAnswer()}
+                    placeholder="Your answer…" autoFocus />
+                  <button onClick={submitAnswer} disabled={answering || !answerText.trim()}
+                    className="btn-ai shrink-0 !py-1.5 text-xs">
+                    {answering ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />} Send
+                  </button>
+                </div>
+                <p className="text-[11px] text-amber-600/80 dark:text-amber-400/70">
+                  The analysis is paused until you answer (or up to 8 minutes, whichever comes first).
+                </p>
               </div>
             )}
             <div ref={logRef} className="min-h-[300px] flex-1 overflow-auto p-4 font-mono text-xs leading-relaxed">
@@ -403,46 +439,32 @@ function TableResultCard({ table }: { table: QualityTableResult }) {
 
 // ---- PDF export — renders an off-screen, print-styled report and rasterizes it --- //
 async function exportQualityReportPDF(run: QualityRun, connName: string) {
-  const container = document.createElement("div");
-  container.style.cssText = "position:fixed;left:-99999px;top:0;width:800px;background:#ffffff;";
-  container.innerHTML = buildReportHTML(run, connName);
-  document.body.appendChild(container);
-  try {
-    const canvas = await html2canvas(container, { scale: 2, backgroundColor: "#ffffff", windowWidth: 800 });
-    const pdf = new jsPDF("p", "mm", "a4");
-    const pageWidth = pdf.internal.pageSize.getWidth();
-    const pageHeight = pdf.internal.pageSize.getHeight();
-    const imgWidth = pageWidth;
-    const imgHeight = (canvas.height * imgWidth) / canvas.width;
-    const imgData = canvas.toDataURL("image/png");
-    let heightLeft = imgHeight;
-    let position = 0;
-    pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
-    heightLeft -= pageHeight;
-    while (heightLeft > 0) {
-      position = heightLeft - imgHeight;
-      pdf.addPage();
-      pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
-      heightLeft -= pageHeight;
-    }
-    const dateStr = new Date().toISOString().slice(0, 10);
-    pdf.save(`data-quality-report-${connName.replace(/\s+/g, "-").toLowerCase()}-${dateStr}.pdf`);
-  } finally {
-    document.body.removeChild(container);
-  }
+  const dateStr = new Date().toISOString().slice(0, 10);
+  await renderHtmlToPDF(buildReportHTML(run, connName),
+    `data-quality-report-${connName.replace(/\s+/g, "-").toLowerCase()}-${dateStr}.pdf`);
 }
 
-function esc(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
+const esc = escHtml;
 
 function buildReportHTML(run: QualityRun, connName: string): string {
-  const font = "font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;";
-  const totalFindings = run.tables.reduce((s, t) => s + t.findings.length, 0);
+  const allFindings = run.tables.flatMap((t) => t.findings);
+  const sevCounts = { high: 0, medium: 0, low: 0 };
+  for (const f of allFindings) sevCounts[f.severity]++;
   const highCount = run.tables.filter((t) => t.interpretation.risk_level === "high").length;
   const medCount = run.tables.filter((t) => t.interpretation.risk_level === "medium").length;
   const riskColor: Record<string, string> = { high: "#e11d48", medium: "#f59e0b", low: "#009f3d" };
   const sevColor: Record<string, string> = { high: "#e11d48", medium: "#f59e0b", low: "#94a3b8" };
+
+  // Data Health Score — 100 minus a weighted penalty per at-risk table (transparent, not a black box).
+  const healthScore = run.tables.length === 0 ? 100 :
+    Math.max(0, Math.round(100 * (1 - (highCount * 1.0 + medCount * 0.4) / run.tables.length)));
+  const healthColor = healthScore >= 80 ? "#009f3d" : healthScore >= 50 ? "#f59e0b" : "#e11d48";
+
+  const recommendations = [...new Map(
+    run.tables.flatMap((t) => t.interpretation.highlights)
+      .filter((h) => h.suggested_action?.trim())
+      .map((h) => [h.suggested_action.trim(), h.suggested_action.trim()] as [string, string])
+  ).values()].slice(0, 10);
 
   const tableSections = [...run.tables].sort((a, b) =>
       ({ high: 0, medium: 1, low: 2 }[a.interpretation.risk_level] - { high: 0, medium: 1, low: 2 }[b.interpretation.risk_level]))
@@ -488,50 +510,76 @@ function buildReportHTML(run: QualityRun, connName: string): string {
     }).join("");
 
   return `
-    <div style="${font}padding:36px 40px;color:#0f172a;">
-      <div style="display:flex;align-items:center;gap:10px;border-bottom:3px solid #009f3d;padding-bottom:16px;">
-        <div style="width:36px;height:36px;border-radius:9px;background:linear-gradient(135deg,#40b76e,#00722c);"></div>
-        <div>
-          <div style="font-size:19px;font-weight:800;">DOINg.Catalogue</div>
-          <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.04em;">Data Quality Report</div>
+    <div style="${REPORT_FONT}padding:36px 40px;color:#0f172a;">
+      ${reportHeader("Data Quality Report — Executive Overview", [
+        connName, new Date(run.finished_at ? run.finished_at * 1000 : Date.now()).toLocaleString()])}
+
+      <div style="margin-top:20px;font-size:12px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.04em;">Executive Summary</div>
+      <div style="display:flex;gap:14px;margin-top:8px;align-items:stretch;">
+        <div style="width:150px;flex-shrink:0;border:1px solid #e2e8f0;border-radius:10px;padding:14px;display:flex;flex-direction:column;align-items:center;justify-content:center;">
+          <div style="font-size:34px;font-weight:800;color:${healthColor};">${healthScore}</div>
+          <div style="font-size:10px;color:#94a3b8;text-transform:uppercase;text-align:center;">Data Health Score</div>
         </div>
-        <div style="margin-left:auto;text-align:right;font-size:11px;color:#94a3b8;">
-          <div>${esc(connName)}</div>
-          <div>${new Date(run.finished_at ? run.finished_at * 1000 : Date.now()).toLocaleString()}</div>
+        <div style="flex:1;display:flex;gap:14px;">
+          <div style="flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:14px;">
+            <div style="font-size:22px;font-weight:800;">${run.tables.length}</div>
+            <div style="font-size:11px;color:#94a3b8;">table(s) analysed</div>
+          </div>
+          <div style="flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:14px;">
+            <div style="font-size:22px;font-weight:800;">${allFindings.length}</div>
+            <div style="font-size:11px;color:#94a3b8;">finding(s) total</div>
+          </div>
+          <div style="flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:14px;">
+            <div style="font-size:22px;font-weight:800;color:#e11d48;">${highCount}</div>
+            <div style="font-size:11px;color:#94a3b8;">high-risk table(s)</div>
+          </div>
+          <div style="flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:14px;">
+            <div style="font-size:22px;font-weight:800;color:#f59e0b;">${medCount}</div>
+            <div style="font-size:11px;color:#94a3b8;">medium-risk table(s)</div>
+          </div>
         </div>
       </div>
 
-      <div style="display:flex;gap:14px;margin-top:20px;">
-        <div style="flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:14px;">
-          <div style="font-size:24px;font-weight:800;">${run.tables.length}</div>
-          <div style="font-size:11px;color:#94a3b8;">table(s) analysed</div>
-        </div>
-        <div style="flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:14px;">
-          <div style="font-size:24px;font-weight:800;">${totalFindings}</div>
-          <div style="font-size:11px;color:#94a3b8;">finding(s) total</div>
-        </div>
-        <div style="flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:14px;">
-          <div style="font-size:24px;font-weight:800;color:#e11d48;">${highCount}</div>
-          <div style="font-size:11px;color:#94a3b8;">high-risk table(s)</div>
-        </div>
-        <div style="flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:14px;">
-          <div style="font-size:24px;font-weight:800;color:#f59e0b;">${medCount}</div>
-          <div style="font-size:11px;color:#94a3b8;">medium-risk table(s)</div>
-        </div>
-      </div>
+      <div style="margin-top:20px;font-size:12px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.04em;">Severity Matrix</div>
+      <table style="width:100%;border-collapse:collapse;margin-top:8px;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
+        <thead><tr style="background:#f8fafc;">
+          <th style="text-align:left;padding:8px 12px;font-size:10px;color:#94a3b8;text-transform:uppercase;">Severity</th>
+          <th style="text-align:left;padding:8px 12px;font-size:10px;color:#94a3b8;text-transform:uppercase;">Meaning</th>
+          <th style="text-align:right;padding:8px 12px;font-size:10px;color:#94a3b8;text-transform:uppercase;">Count</th>
+        </tr></thead>
+        <tbody>
+          <tr><td style="padding:8px 12px;border-top:1px solid #e2e8f0;font-weight:700;color:#e11d48;">Critical</td>
+            <td style="padding:8px 12px;border-top:1px solid #e2e8f0;color:#64748b;font-size:12px;">Likely a real bug or data-integrity issue — investigate first</td>
+            <td style="padding:8px 12px;border-top:1px solid #e2e8f0;text-align:right;font-weight:700;">${sevCounts.high}</td></tr>
+          <tr><td style="padding:8px 12px;border-top:1px solid #e2e8f0;font-weight:700;color:#f59e0b;">Major</td>
+            <td style="padding:8px 12px;border-top:1px solid #e2e8f0;color:#64748b;font-size:12px;">Worth a look — could be a bug or a legitimate edge case</td>
+            <td style="padding:8px 12px;border-top:1px solid #e2e8f0;text-align:right;font-weight:700;">${sevCounts.medium}</td></tr>
+          <tr><td style="padding:8px 12px;border-top:1px solid #e2e8f0;font-weight:700;color:#94a3b8;">Minor</td>
+            <td style="padding:8px 12px;border-top:1px solid #e2e8f0;color:#64748b;font-size:12px;">Low-impact — track but rarely urgent</td>
+            <td style="padding:8px 12px;border-top:1px solid #e2e8f0;text-align:right;font-weight:700;">${sevCounts.low}</td></tr>
+        </tbody>
+      </table>
 
       ${run.plan?.narrative ? `<div style="margin-top:18px;border:1px solid #bbf7d0;background:#f0fdf4;border-radius:10px;padding:14px 16px;">
         <div style="font-size:11px;font-weight:700;color:#008934;text-transform:uppercase;margin-bottom:4px;">Analysis strategy</div>
         <div style="font-size:12.5px;color:#166534;line-height:1.5;">${esc(run.plan.narrative)}</div>
       </div>` : ""}
 
+      <div style="margin-top:24px;font-size:12px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.04em;">Detailed Findings</div>
       ${tableSections}
 
-      <div style="margin-top:28px;padding-top:14px;border-top:1px solid #e2e8f0;font-size:10px;color:#94a3b8;">
-        Generated by DOINg.Catalogue's Data Quality Checks module — statistical checks (outlier detection, pattern
-        consistency, duplicate rows) combined with local-LLM planning and interpretation. Thresholds: z-score
-        ${run.thresholds.zscore}, IQR × ${run.thresholds.iqr_multiplier}, outlier severity cutoff
-        ${(run.thresholds.outlier_pct_high * 100).toFixed(0)}%. Review findings before acting on them.
-      </div>
+      ${recommendations.length > 0 ? `
+      <div style="margin-top:24px;border:1px solid #e2e8f0;border-radius:10px;padding:16px;page-break-inside:avoid;">
+        <div style="font-size:12px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;">Recommendations</div>
+        <ul style="margin:0;padding-left:18px;">
+          ${recommendations.map((r) => `<li style="font-size:12.5px;color:#334155;margin-bottom:6px;line-height:1.5;">${esc(r)}</li>`).join("")}
+        </ul>
+      </div>` : ""}
+
+      ${reportFooter(
+        `Generated by DOINg.Catalogue's Data Quality Checks module — statistical checks (outlier detection, pattern ` +
+        `consistency, duplicate rows, cross-column consistency, temporal drift, multivariate outliers) combined with ` +
+        `local-LLM planning and interpretation. Thresholds: z-score ${run.thresholds.zscore}, IQR × ${run.thresholds.iqr_multiplier}, ` +
+        `outlier severity cutoff ${(run.thresholds.outlier_pct_high * 100).toFixed(0)}%. Review findings before acting on them.`)}
     </div>`;
 }
