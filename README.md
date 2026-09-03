@@ -64,6 +64,21 @@ Relationships → Lineage → Catalog Graph → AI Enrichment Center → Agents 
 Tags, hierarchical domains, ownership, deprecation, usage/popularity, custom properties, and column-level
 lineage / Impact Analysis — the DataHub-style layer on top of the profiling engine.
 
+### Datamarts — tracing what's behind a report
+A datamart (a calculated/derived table feeding a report or dashboard) is any dataset carrying the reserved
+**datamart** tag, visible as a violet badge across Catalog, Library and the graph views, and filterable with
+one click ("Datamarts only") in the Catalog table list. Two ways to identify one:
+- **Manually**, from a table's Identity Card — mark it and paste its generation SQL; the local LLM describes
+  what it computes and proposes lineage links to the raw tables it reads from.
+- **Automatically**, from a registry table you already maintain (one row per datamart, with its name and
+  generation SQL) — pick it from the Catalog toolbar, the LLM finds the right columns, and one scan tags,
+  analyses and links every datamart in it: matched to an existing table by name where one exists, created
+  as a lightweight placeholder otherwise, and auto-linked to any exact-name source-table match.
+
+Datamart lineage renders in violet across Lineage, Impact Analysis and Catalog Graph, and every datamart —
+its generation SQL, functional description, and raw source tables — is exposed through the app's own MCP
+server via `list_datamarts`, so an agent can trace what's behind a report end to end.
+
 ### 🆕 Data Library + Librarian (for non-technical users)
 - **Browse by topic** — tables grouped by business domain, described in plain language, friendly field types (Identifier, Email, Amount, Date, Yes/No…) instead of `VARCHAR2`.
 - **Reader pages** — what's inside a table, how it connects ("Each row connects to one Customer"), and the related business terms — no jargon.
@@ -135,6 +150,7 @@ Backend   FastAPI · Uvicorn :3001 · db.json persistence (single-writer, RLock-
           engine/connectors.py   (Oracle / ClickHouse / Demo / OKF / MCP-as-a-source)
           engine/mcp_client.py   (MCP client — pulls FROM another app's MCP server)
           engine/mcp_library.py  (code/SQL-grounded MCP tool documentation + link matching)
+          engine/datamarts.py    (datamart SQL analysis + registry-table bulk import)
           engine/profiling.py    (MinHash fingerprints, semantic types, quality)
           engine/similarity.py   (Jaccard, inclusion, PK/FK)
           engine/agents.py       (6 agents + orchestrator)

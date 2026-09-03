@@ -20,7 +20,7 @@ from typing import Any
 
 import auth
 from store import Store
-from engine import llm, agents, explore, mcp_client, quality_checks, mcp_library
+from engine import llm, agents, explore, mcp_client, quality_checks, mcp_library, datamarts
 from engine import search as search_engine
 from engine.connectors import build_connector
 from engine.query_registry import registry as query_registry, QueryCancelled
@@ -889,6 +889,100 @@ def remove_dataset_tag(ds_id: str, tag: str, x_base_version: int | None = Header
     guard(x_base_version)
     store.remove_dataset_tag(ds_id, tag)
     return {"ok": True, "version": store.version}
+
+
+# -- datamarts: mark/unmark one table, or bulk-import from a registry table -- #
+class DatamartIn(BaseModel):
+    sql: str
+    language: str = "sql"  # sql | code
+
+
+@app.post("/api/datasets/{ds_id:path}/datamart")
+def set_dataset_datamart(ds_id: str, body: DatamartIn, x_base_version: int | None = Header(default=None)):
+    """Mark a table as a datamart, with its generation SQL/code — the local LLM
+    reads it to describe what it does and which raw tables feed it, and
+    proposes lineage links to those tables (accepted from the Identity Card)."""
+    guard(x_base_version)
+    snap = store.snapshot()
+    ds = next((d for d in snap["datasets"] if d["id"] == ds_id), None)
+    if not ds:
+        raise HTTPException(404, "dataset not found")
+    conn = store.get_connection(ds["connection_id"])
+    try:
+        extraction = mcp_library.extract_query_info(
+            ds["name"], (snap["docs"].get(ds_id) or {}).get("definition") or "",
+            body.language, body.sql, model=(conn or {}).get("llm_model") or _llm_model())
+    except mcp_library.LLMUnavailable:
+        raise HTTPException(503, "Local LLM unavailable")
+    extraction["link_candidates"] = datamarts.match_source_tables(
+        snap, extraction.get("tables_referenced", []), ds_id)
+    dm = store.set_dataset_datamart(ds_id, {
+        "sql": body.sql, "language": body.language, "extraction": extraction, "analyzed_at": time.time()})
+    return {"ok": True, "datamart": dm, "version": store.version}
+
+
+@app.delete("/api/datasets/{ds_id:path}/datamart")
+def clear_dataset_datamart(ds_id: str, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    if not store.get_dataset_doc(ds_id):
+        raise HTTPException(404, "dataset not found")
+    store.clear_dataset_datamart(ds_id)
+    return {"ok": True, "version": store.version}
+
+
+class DatamartRegistryDetectIn(BaseModel):
+    dataset_id: str
+
+
+@app.post("/api/datamarts/detect-registry")
+def datamarts_detect_registry(body: DatamartRegistryDetectIn):
+    """Given a table that lists many datamarts (one per row), have the LLM
+    identify which column holds the datamart name and which holds its
+    generation SQL — preview only, reviewed before /import-registry runs."""
+    snap = store.snapshot(trim=False)
+    ds = next((d for d in snap["datasets"] if d["id"] == body.dataset_id), None)
+    if not ds:
+        raise HTTPException(404, "dataset not found")
+    conn = store.get_connection(ds["connection_id"])
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    try:
+        rows = build_connector(conn, store=store, source="datamart-registry").sample_rows(ds["schema"], ds["name"], limit=20)
+    except Exception as e:
+        raise HTTPException(422, f"Could not sample rows: {e}")
+    try:
+        out = datamarts.detect_registry_roles(ds, rows, model=conn.get("llm_model") or _llm_model())
+    except datamarts.LLMUnavailable:
+        raise HTTPException(503, "Local LLM unavailable")
+    return {"ok": True, **out, "columns": [c["name"] for c in ds["columns"]], "sample": rows[:8]}
+
+
+class DatamartRegistryImportIn(BaseModel):
+    dataset_id: str
+    roles: dict[str, str | None]
+    limit: int = 50
+
+
+@app.post("/api/datamarts/import-registry")
+def datamarts_import_registry(body: DatamartRegistryImportIn, x_base_version: int | None = Header(default=None)):
+    """Bulk pass: for every row of the registry table, mark/create the
+    datamart it describes, extract its generation SQL, and auto-link any
+    exact-name source-table match — see engine.datamarts.import_registry."""
+    guard(x_base_version)
+    ds = next((d for d in store.snapshot()["datasets"] if d["id"] == body.dataset_id), None)
+    if not ds:
+        raise HTTPException(404, "dataset not found")
+    conn = store.get_connection(ds["connection_id"])
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    if not body.roles.get("name_col") or not body.roles.get("sql_col"):
+        raise HTTPException(400, "name_col and sql_col are required")
+    try:
+        result = datamarts.import_registry(store, ds, body.roles, conn, limit=body.limit,
+                                           model=conn.get("llm_model") or _llm_model())
+    except Exception as e:
+        raise HTTPException(422, f"Registry import failed: {e}")
+    return {"ok": True, **result, "version": store.version}
 
 
 @app.post("/api/columns/{ds_id:path}/{col}/tags")

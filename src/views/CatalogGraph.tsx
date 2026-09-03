@@ -14,10 +14,11 @@ interface GNode { id: string; kind: NodeKind; label: string; sub: string; color?
 interface GEdge { from: string; to: string; kind: string; }
 
 const EDGE_COLOR: Record<string, string> = {
-  key: "#009f3d", mapping: "#ff6600", manual: "#10b981", contains: "#94a3b8", tool: "#06b6d4",
+  key: "#009f3d", mapping: "#ff6600", manual: "#10b981", contains: "#94a3b8", tool: "#06b6d4", datamart: "#8b5cf6",
 };
 const EDGE_LABEL: Record<string, string> = {
-  key: "key relationship", mapping: "ETL mapping", manual: "manual lineage", contains: "contains", tool: "MCP tool",
+  key: "key relationship", mapping: "ETL mapping", manual: "manual lineage", contains: "contains",
+  tool: "MCP tool", datamart: "datamart",
 };
 const CONN_ICON: Record<string, typeof Database> = { mcp: Plug };
 const COLLAPSE_THRESHOLD = 6;
@@ -64,8 +65,9 @@ export function CatalogGraph() {
       });
       if (!isCollapsed) {
         for (const d of dsOfConn) {
+          const isDatamart = (state?.docs[d.id]?.tags ?? []).includes("datamart");
           nodeMap.set(d.id, {
-            id: d.id, kind: "dataset", label: d.name, sub: d.schema,
+            id: d.id, kind: "dataset", label: d.name, sub: isDatamart ? `${d.schema} · datamart` : d.schema,
             color: healthColor(avgQuality(d)),
           });
           rawEdges.push({ from: `conn:${c.id}`, to: d.id, kind: "contains" });
@@ -97,7 +99,7 @@ export function CatalogGraph() {
     }
     for (const l of state?.lineage ?? []) {
       const a = resolve(l.from), b = resolve(l.to);
-      if (a && b && a !== b) rawEdges.push({ from: a, to: b, kind: l.kind === "mapping" ? "mapping" : "manual" });
+      if (a && b && a !== b) rawEdges.push({ from: a, to: b, kind: l.kind === "mapping" || l.kind === "datamart" ? l.kind : "manual" });
     }
 
     // dedupe parallel edges between the same resolved pair+kind
@@ -111,7 +113,7 @@ export function CatalogGraph() {
     });
 
     return { nodes: [...nodeMap.values()], edges, byId: nodeMap };
-  }, [connections, datasets, state?.relationships, state?.lineage, scopeConn, collapsed, hiddenKinds]);
+  }, [connections, datasets, state?.relationships, state?.lineage, state?.docs, scopeConn, collapsed, hiddenKinds]);
 
   const layout = useMemo(
     () => buildLayout(nodes.map((n) => n.id), edges, { nodeW: 168, nodeH: 46, gapX: 220, gapY: 14 }),

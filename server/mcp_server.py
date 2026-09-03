@@ -113,6 +113,13 @@ TOOLS: dict[str, types.Tool] = {
             "required": ["connection_id", "tool"], "additionalProperties": False,
         },
     ),
+    "list_datamarts": types.Tool(
+        name="list_datamarts",
+        description="List every datamart in the catalog — a calculated/derived table that feeds a report "
+                    "or dashboard — with its generation SQL, the local LLM's functional description of what "
+                    "it computes, and which raw tables feed it. Use this to trace what's behind a report.",
+        inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
+    ),
 }
 
 
@@ -305,6 +312,28 @@ async def _h_get_mcp_query_definition(store, args: dict[str, Any]) -> dict[str, 
     ]}
 
 
+async def _h_list_datamarts(store, args: dict[str, Any]) -> dict[str, Any]:
+    snap = store.snapshot()
+    exposure = _exposure(store)
+    out = []
+    for d in snap["datasets"]:
+        doc = snap["docs"].get(d["id"], {})
+        if "datamart" not in (doc.get("tags") or []):
+            continue
+        if _dataset_denied(d["id"], exposure):
+            continue
+        dm = doc.get("datamart") or {}
+        extraction = dm.get("extraction") or {}
+        out.append({
+            "id": d["id"], "schema": d["schema"], "name": d["name"],
+            "definition": doc.get("definition"),
+            "generation_sql": dm.get("sql"),
+            "functional_description": extraction.get("functional_description"),
+            "source_tables": [t.get("name") for t in extraction.get("tables_referenced", [])],
+        })
+    return {"datamarts": out}
+
+
 _HANDLERS: dict[str, Callable[[Any, dict[str, Any]], Awaitable[dict[str, Any]]]] = {
     "list_datasets": _h_list_datasets,
     "get_dataset_schema": _h_get_dataset_schema,
@@ -316,6 +345,7 @@ _HANDLERS: dict[str, Callable[[Any, dict[str, Any]], Awaitable[dict[str, Any]]]]
     "list_mcp_sources": _h_list_mcp_sources,
     "get_mcp_source_tools": _h_get_mcp_source_tools,
     "get_mcp_query_definition": _h_get_mcp_query_definition,
+    "list_datamarts": _h_list_datamarts,
 }
 
 

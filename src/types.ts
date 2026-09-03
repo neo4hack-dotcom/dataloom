@@ -133,6 +133,41 @@ export interface DatasetDoc {
   last_viewed_at?: number;
   custom_properties?: Record<string, string>;
   profile_history?: { row_estimate: number; ts: number }[];
+  datamart?: DatamartInfo;
+}
+
+// -- Datamarts: calculated/derived tables that feed reports & dashboards -- //
+export interface DatamartTableRef {
+  name: string;
+  role: "source" | "target";
+}
+
+export interface DatamartColumnInfo {
+  name: string;
+  description: string;
+  source_expression?: string;
+}
+
+export interface DatamartLinkCandidate {
+  dataset_id: string;
+  label: string;
+  matched_table: string;
+  score: number;
+}
+
+export interface DatamartExtraction {
+  functional_description: string;
+  tables_referenced: DatamartTableRef[];
+  columns: DatamartColumnInfo[];
+  link_candidates: DatamartLinkCandidate[];
+}
+
+export interface DatamartInfo {
+  sql: string;
+  language: "sql" | "code";
+  extraction: DatamartExtraction | null;
+  analyzed_at?: number;
+  registry_dataset_id?: string;
 }
 
 export interface DiscoveredTable {
@@ -265,7 +300,7 @@ export interface LineageEdge {
   from: string;
   to: string;
   via: string;
-  kind: "key" | "mapping" | "manual";
+  kind: "key" | "mapping" | "manual" | "datamart";
   confidence: number;
 }
 
