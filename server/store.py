@@ -79,6 +79,7 @@ _DEFAULT: dict[str, Any] = {
                 "list_mcp_sources": True,
                 "get_mcp_source_tools": True,
                 "get_mcp_query_definition": True,
+                "list_datamarts": True,
             },
             "exposure": {
                 "hide_pii": True,
@@ -564,6 +565,29 @@ class Store:
             if tag in (doc.get("tags") or []):
                 doc["tags"].remove(tag)
             self._bump("tag.remove", f"{ds_id}:{tag}")
+
+    # -- datamarts --------------------------------------------------------------- #
+    # A datamart is just a dataset carrying the reserved "datamart" tag, plus this
+    # optional metadata blob (generation SQL + LLM extraction) on its doc.
+    def set_dataset_datamart(self, ds_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            doc = self._db["docs"].setdefault(ds_id, {})
+            dm = doc.setdefault("datamart", {})
+            dm.update(patch)
+            tags = doc.setdefault("tags", [])
+            if "datamart" not in tags:
+                tags.append("datamart")
+            self._bump("datamart.set", ds_id)
+            return dm
+
+    def clear_dataset_datamart(self, ds_id: str):
+        with self._lock:
+            doc = self._db["docs"].get(ds_id) or {}
+            doc.pop("datamart", None)
+            tags = doc.get("tags") or []
+            if "datamart" in tags:
+                tags.remove("datamart")
+            self._bump("datamart.clear", ds_id)
 
     def add_column_tag(self, ds_id: str, col: str, tag: str):
         with self._lock:

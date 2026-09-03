@@ -352,6 +352,31 @@ const SECTIONS: Section[] = [
           Arbitrary key/value metadata on the Properties tab — SLA, retention policy, source system, or
           anything specific to your organisation that doesn't fit the built-in fields.
         </P>
+        <H3>Datamarts</H3>
+        <P>
+          A datamart is a calculated/derived table that feeds a report or dashboard — recognisable in the
+          catalogue by its <b>datamart</b> tag (violet badge on Catalog rows, Library cards, and the table's
+          Identity Card). Tracking these lets anyone trace what's behind a report: the datamart, and behind
+          it, the raw source tables that feed it.
+        </P>
+        <Ul>
+          <li><b>Mark one table by hand</b> — on its Identity Card, click <b>Mark as datamart</b> and paste
+            its generation SQL. The local LLM describes what it computes and proposes lineage links to the
+            raw tables it reads from — accept a link with one click, exactly like the MCP Library's query
+            documentation.</li>
+          <li><b>Import many at once</b> — if you already maintain a registry table listing your datamarts
+            (name + generation SQL per row, a common BI-team pattern), click the list icon next to
+            Catalog's search box, pick that table, and the LLM finds the right columns. Scanning it tags and
+            analyses every row: matched to an existing table by name where one exists, or created as a
+            lightweight placeholder otherwise, with lineage auto-linked wherever a source-table name matches
+            exactly.</li>
+          <li><b>Find them</b> — check <b>Datamarts only</b> above the Catalog table list to filter down to
+            just these, or use the <b>Tags</b> view like any other tag.</li>
+        </Ul>
+        <P>
+          Datamart lineage edges show in <b>violet</b> across Lineage, Impact Analysis and Catalog Graph, so
+          a raw-table-to-report chain is visually distinct from inferred keys or ETL mappings.
+        </P>
       </>
     ),
   },
@@ -571,6 +596,8 @@ const SECTIONS: Section[] = [
           <code> get_mcp_source_tools</code> and <code>get_mcp_query_definition</code> — so an external agent
           connecting to this catalog's own MCP endpoint can discover which other MCP servers you've referenced
           and read the actual documented logic behind their tools, not just this catalog's own tables.
+          <code> list_datamarts</code> does the same for datamarts — every one, its generation SQL, and the
+          raw tables that feed it, so an agent tracing what's behind a report can do so through MCP directly.
         </P>
         <H3>Connector settings</H3>
         <P>

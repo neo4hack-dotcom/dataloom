@@ -3,7 +3,7 @@ import {
   Library as LibraryIcon, Search, BookOpen, MessageSquareText, Send, Loader2,
   Lock, ArrowLeft, Sparkles, Hash, Type, Calendar, Mail, Link2, ToggleLeft,
   Banknote, MapPin, Phone, Fingerprint, Tag, FileText, Package,
-  ChevronRight, Layers, AlertTriangle,
+  ChevronRight, Layers, AlertTriangle, Boxes,
 } from "lucide-react";
 import { useCatalog, useScopedDatasets } from "../store";
 import { api } from "../api";
@@ -157,6 +157,7 @@ function Shelves({ datasets, q, setQ, onOpen, onAsk }: {
                       <div className={`truncate font-semibold ${doc?.deprecated ? "line-through opacity-60" : ""}`}>{humanize(d.name)}</div>
                       <div className="text-[11px] text-slate-400">{d.columns.length} fields · ~{d.row_estimate.toLocaleString()} rows</div>
                     </div>
+                    {(doc?.tags ?? []).includes("datamart") && <Boxes size={13} className="shrink-0 text-violet-500" />}
                     {doc?.deprecated && <AlertTriangle size={13} className="shrink-0 text-rose-500" />}
                     {pii > 0 && <Lock size={13} className="shrink-0 text-rose-400" />}
                     <ChevronRight size={15} className="shrink-0 text-slate-300 transition-transform group-hover:translate-x-0.5 dark:text-slate-600" />
@@ -219,7 +220,12 @@ function Reader({ ds, onBack }: { ds: Dataset; onBack: () => void }) {
         <div className="flex items-center gap-2">
           <div className="grid h-10 w-10 place-items-center rounded-lg bg-loom-500/10 text-loom-500"><BookOpen size={20} /></div>
           <div>
-            <h2 className="text-xl font-bold">{humanize(ds.name)}</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-xl font-bold">{humanize(ds.name)}</h2>
+              {(doc?.tags ?? []).includes("datamart") && (
+                <span className="chip bg-violet-500/10 text-violet-500"><Boxes size={11} /> Datamart</span>
+              )}
+            </div>
             <div className="text-xs text-slate-400">
               {doc?.domain && <span className="text-loom-500">{doc.domain}</span>}
               {doc?.domain && " · "}{ds.columns.length} fields · ~{ds.row_estimate.toLocaleString()} rows

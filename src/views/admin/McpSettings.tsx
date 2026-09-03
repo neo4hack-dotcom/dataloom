@@ -18,6 +18,7 @@ const TOOL_META: { id: string; label: string; desc: string; liveData?: boolean }
   { id: "list_mcp_sources", label: "list_mcp_sources", desc: "List every other MCP server referenced in this catalog's MCP Library, with coverage counts." },
   { id: "get_mcp_source_tools", label: "get_mcp_source_tools", desc: "Full tool inventory of one referenced MCP source, flagging what's mapped/documented." },
   { id: "get_mcp_query_definition", label: "get_mcp_query_definition", desc: "The actual SQL/code + LLM-extracted logic behind one referenced MCP tool." },
+  { id: "list_datamarts", label: "list_datamarts", desc: "Every datamart, its generation SQL, and the raw tables that feed it." },
 ];
 
 function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {

@@ -1,7 +1,7 @@
 import type {
-  AgentRun, AlertSettings, CatalogState, ColumnLineageEdge, Connection, ConnectorSettings, DiscoveredTable, Domain, Health,
-  LlmConfig, LlmTest, McpConfig, McpCoverageGap, McpMappingTable, McpQueryDef, McpTool, Notification, Owner, QualityRun,
-  QualityThresholds, QueryLogEntry, Role, SearchHit, User,
+  AgentRun, AlertSettings, CatalogState, ColumnLineageEdge, Connection, ConnectorSettings, DatamartInfo, DiscoveredTable,
+  Domain, Health, LlmConfig, LlmTest, McpConfig, McpCoverageGap, McpMappingTable, McpQueryDef, McpTool, Notification, Owner,
+  QualityRun, QualityThresholds, QueryLogEntry, Role, SearchHit, User,
 } from "./types";
 
 export class VersionConflict extends Error {
@@ -311,6 +311,22 @@ export const api = {
   mappingApply: (dataset_id: string, roles: Record<string, string | null>, baseVersion: number) =>
     req<{ ok: boolean; edges_added: number; docs_added: number; rows_scanned: number; version: number }>(
       "/mapping/apply", { method: "POST", body: JSON.stringify({ dataset_id, roles }), baseVersion }),
+
+  // -- datamarts --
+  setDatasetDatamart: (dsId: string, sql: string, language: "sql" | "code", baseVersion: number) =>
+    req<{ ok: boolean; datamart: DatamartInfo; version: number }>(
+      `/datasets/${encodeURIComponent(dsId)}/datamart`,
+      { method: "POST", body: JSON.stringify({ sql, language }), baseVersion }),
+  clearDatasetDatamart: (dsId: string, baseVersion: number) =>
+    req<{ ok: boolean; version: number }>(`/datasets/${encodeURIComponent(dsId)}/datamart`, { method: "DELETE", baseVersion }),
+  detectDatamartRegistry: (dataset_id: string) =>
+    req<{ ok: boolean; roles: Record<string, string | null>; confidence: number; reason: string;
+          columns: string[]; sample: Record<string, unknown>[] }>("/datamarts/detect-registry", {
+      method: "POST", body: JSON.stringify({ dataset_id }),
+    }),
+  importDatamartRegistry: (dataset_id: string, roles: Record<string, string | null>, limit: number, baseVersion: number) =>
+    req<{ ok: boolean; processed: number; created: number; matched_existing: number; edges_added: number; failed: number; version: number }>(
+      "/datamarts/import-registry", { method: "POST", body: JSON.stringify({ dataset_id, roles, limit }), baseVersion }),
 
   // -- full backup restore --
   importBackup: (backup: unknown, mode: "replace" | "merge", baseVersion: number) =>
