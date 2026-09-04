@@ -139,7 +139,7 @@ function KeysView() {
                 </div>
               </div>
               <button onClick={() => explain(i, r, true)} disabled={!llmUp || explaining === i}
-                className="btn-ghost !p-1 text-slate-400 shrink-0" title="Regenerate">
+                className="btn-ghost !p-1 text-loom-500 shrink-0" title="Regenerate">
                 {explaining === i ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
               </button>
             </div>

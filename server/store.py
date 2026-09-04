@@ -41,6 +41,8 @@ _DEFAULT: dict[str, Any] = {
     "admin_reset": {"code": None, "expires_at": None},
     "domains": [],
     "column_lineage": [],
+    "quality_runs": [],
+    "notifications": [],
     "settings": {
         "theme": "dark",
         "llm": {
@@ -54,6 +56,14 @@ _DEFAULT: dict[str, Any] = {
         "connectors": {
             "row_fetch_limit": 100,
         },
+        "alerts": {
+            "quality_score_warn": 60,
+            "quality_score_critical": 35,
+            "null_ratio_warn": 0.5,
+            "row_drift_warn_pct": 20,
+            "require_pii_validation": True,
+            "stale_days_warn": 30,
+        },
         "mcp": {
             "enabled": False,
             "api_token_hash": None,
@@ -66,6 +76,10 @@ _DEFAULT: dict[str, Any] = {
                 "get_lineage": False,
                 "get_glossary_term": True,
                 "sample_dataset_rows": False,
+                "list_mcp_sources": True,
+                "get_mcp_source_tools": True,
+                "get_mcp_query_definition": True,
+                "list_datamarts": True,
             },
             "exposure": {
                 "hide_pii": True,
@@ -197,6 +211,7 @@ class Store:
             self._db["runs"] = []
             self._db["domains"] = []
             self._db["column_lineage"] = []
+            self._db["quality_runs"] = []
             self._bump("catalog.reset", "")
 
     # -- backup / restore ---------------------------------------------------- #
@@ -266,9 +281,15 @@ class Store:
             return conn
 
     def delete_connection(self, cid: str):
+        """Deletes the connection and every dataset it produced, plus every
+        doc/relationship/lineage/QA/glossary reference to those datasets —
+        so removing a mockup (Demo) source never leaves stray catalog data
+        behind to mix with what real sources contributed."""
         with self._lock:
             self._db["connections"] = [c for c in self._db["connections"] if c["id"] != cid]
+            ds_ids = {d["id"] for d in self._db["datasets"] if d["connection_id"] == cid}
             self._db["datasets"] = [d for d in self._db["datasets"] if d["connection_id"] != cid]
+            self._purge_dataset_refs(ds_ids)
             self._bump("connection.delete", cid)
 
     # -- discovery & scope (big-volume sources) ------------------------------ #
@@ -282,6 +303,52 @@ class Store:
             conn["discovered_at"] = time.time()
             self._bump("connection.discover", f"{cid}: {len(tables)} tables")
             return tables
+
+    # -- MCP Library: raw tool inventory + pasted code/SQL definitions ------- #
+    def set_mcp_tools(self, cid: str, tools: list[dict[str, Any]]):
+        """Persist the MCP server's full discovered tool inventory (every
+        tool, not just the ones proposed as tables) so the MCP Library can
+        browse it without re-hitting the remote server on every visit."""
+        with self._lock:
+            conn = self.get_connection(cid)
+            if not conn:
+                raise ValueError("connection not found")
+            conn["mcp_tools"] = tools
+            conn["mcp_tools_at"] = time.time()
+            self._bump("connection.mcp_tools", f"{cid}: {len(tools)} tools")
+            return tools
+
+    def add_mcp_query(self, cid: str, entry: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            conn = self.get_connection(cid)
+            if not conn:
+                raise ValueError("connection not found")
+            entry = dict(entry)
+            entry["id"] = f"mq_{int(time.time()*1000)}"
+            entry["created_at"] = time.time()
+            conn.setdefault("mcp_queries", []).append(entry)
+            self._bump("connection.mcp_query.add", f"{cid}: {entry.get('tool')}")
+            return entry
+
+    def update_mcp_query(self, cid: str, qid: str, patch: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            conn = self.get_connection(cid)
+            if not conn:
+                raise ValueError("connection not found")
+            q = next((x for x in conn.get("mcp_queries", []) if x["id"] == qid), None)
+            if not q:
+                raise ValueError("query not found")
+            q.update(patch)
+            self._bump("connection.mcp_query.update", f"{cid}: {qid}")
+            return q
+
+    def delete_mcp_query(self, cid: str, qid: str):
+        with self._lock:
+            conn = self.get_connection(cid)
+            if not conn:
+                raise ValueError("connection not found")
+            conn["mcp_queries"] = [x for x in conn.get("mcp_queries", []) if x["id"] != qid]
+            self._bump("connection.mcp_query.delete", f"{cid}: {qid}")
 
     def set_scope(self, cid: str, keys: list[str], row_limits: dict[str, int] | None = None):
         """Persist the user-selected scope (list of 'schema.name') for a connection,
@@ -336,18 +403,34 @@ class Store:
             self._bump("dataset.add", ds_id)
             return dataset
 
+    def _purge_dataset_refs(self, ds_ids: set[str]):
+        """Remove every trace of the given dataset ids from every collection
+        that references them by id. Shared by delete_dataset and
+        delete_connection so a deleted source — mockup or real — never
+        leaves orphaned docs/relationships/QA issues/glossary refs behind to
+        pollute search or mix with data from other sources."""
+        for ds_id in ds_ids:
+            self._db["docs"].pop(ds_id, None)
+        self._db["relationships"] = [
+            r for r in self._db["relationships"]
+            if r["child"]["dataset_id"] not in ds_ids and r["parent"]["dataset_id"] not in ds_ids]
+        self._db["lineage"] = [
+            e for e in self._db["lineage"] if e["from"] not in ds_ids and e["to"] not in ds_ids]
+        self._db["column_lineage"] = [
+            e for e in self._db["column_lineage"]
+            if e["from"]["dataset_id"] not in ds_ids and e["to"]["dataset_id"] not in ds_ids]
+        self._db["qa_issues"] = [i for i in self._db["qa_issues"] if i.get("dataset_id") not in ds_ids]
+        self._db["matches"] = [
+            m for m in self._db["matches"]
+            if m["a"]["dataset_id"] not in ds_ids and m["b"]["dataset_id"] not in ds_ids]
+        for term in self._db["glossary"]:
+            term["columns"] = [c for c in term.get("columns", []) if c.get("dataset_id") not in ds_ids]
+        self._db["glossary"] = [t for t in self._db["glossary"] if t.get("columns")]
+
     def delete_dataset(self, ds_id: str):
         with self._lock:
             self._db["datasets"] = [d for d in self._db["datasets"] if d["id"] != ds_id]
-            self._db["docs"].pop(ds_id, None)
-            self._db["relationships"] = [
-                r for r in self._db["relationships"]
-                if r["child"]["dataset_id"] != ds_id and r["parent"]["dataset_id"] != ds_id]
-            self._db["lineage"] = [
-                e for e in self._db["lineage"] if e["from"] != ds_id and e["to"] != ds_id]
-            self._db["column_lineage"] = [
-                e for e in self._db["column_lineage"]
-                if e["from"]["dataset_id"] != ds_id and e["to"]["dataset_id"] != ds_id]
+            self._purge_dataset_refs({ds_id})
             self._bump("dataset.delete", ds_id)
 
     def datasets(self) -> list[dict[str, Any]]:
@@ -394,8 +477,21 @@ class Store:
             raise ValueError(f"Dataset {ds_id} not found")
 
     def set_dataset_doc(self, ds_id: str, doc: dict[str, Any]):
+        """Merge agent-generated fields into the dataset's doc — never replaces it
+        wholesale, so tags/domain/owners/deprecation/custom_properties/usage stats
+        and any human-validated column definition survive an agent re-run."""
         with self._lock:
-            self._db["docs"][ds_id] = doc
+            existing = self._db["docs"].setdefault(ds_id, {})
+            incoming_cols = doc.get("columns")
+            for k, v in doc.items():
+                if k != "columns":
+                    existing[k] = v
+            if incoming_cols:
+                cols = existing.setdefault("columns", {})
+                for name, cd in incoming_cols.items():
+                    if (cols.get(name) or {}).get("status") == "validated":
+                        continue  # never let an agent overwrite a human-validated column
+                    cols[name] = cd
             self._bump("doc.set", ds_id)
 
     def get_dataset_doc(self, ds_id: str) -> dict[str, Any] | None:
@@ -469,6 +565,29 @@ class Store:
             if tag in (doc.get("tags") or []):
                 doc["tags"].remove(tag)
             self._bump("tag.remove", f"{ds_id}:{tag}")
+
+    # -- datamarts --------------------------------------------------------------- #
+    # A datamart is just a dataset carrying the reserved "datamart" tag, plus this
+    # optional metadata blob (generation SQL + LLM extraction) on its doc.
+    def set_dataset_datamart(self, ds_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            doc = self._db["docs"].setdefault(ds_id, {})
+            dm = doc.setdefault("datamart", {})
+            dm.update(patch)
+            tags = doc.setdefault("tags", [])
+            if "datamart" not in tags:
+                tags.append("datamart")
+            self._bump("datamart.set", ds_id)
+            return dm
+
+    def clear_dataset_datamart(self, ds_id: str):
+        with self._lock:
+            doc = self._db["docs"].get(ds_id) or {}
+            doc.pop("datamart", None)
+            tags = doc.get("tags") or []
+            if "datamart" in tags:
+                tags.remove("datamart")
+            self._bump("datamart.clear", ds_id)
 
     def add_column_tag(self, ds_id: str, col: str, tag: str):
         with self._lock:
@@ -612,6 +731,32 @@ class Store:
     def set_relationships(self, r):
         with self._lock:
             self._db["relationships"] = r; self._bump("rel.set", str(len(r)))
+
+    def merge_relationships(self, new_rels: list[dict[str, Any]]):
+        """Re-run of the Linker agent: refresh auto-inferred relationships without
+        losing what a human already did to them — a validated/rejected status or a
+        cached AI explanation carries over, and manually-added edges are never dropped."""
+        def rel_key(r):
+            c, p = r.get("child") or {}, r.get("parent") or {}
+            return (c.get("dataset_id"), c.get("column"), p.get("dataset_id"), p.get("column"))
+        with self._lock:
+            existing_by_key = {rel_key(r): r for r in self._db["relationships"]}
+            merged = []
+            for r in new_rels:
+                old = existing_by_key.get(rel_key(r))
+                if old:
+                    r = {**r}
+                    if old.get("status"):
+                        r["status"] = old["status"]
+                    if old.get("explanation"):
+                        r["explanation"] = old["explanation"]
+                merged.append(r)
+            merged_keys = {rel_key(r) for r in merged}
+            for r in self._db["relationships"]:
+                if r.get("manual") and rel_key(r) not in merged_keys:
+                    merged.append(r)
+            self._db["relationships"] = merged
+            self._bump("rel.set", str(len(merged)))
 
     def relationships(self): return self._db["relationships"]
 
@@ -761,6 +906,76 @@ class Store:
 
     def runs(self): return self._db["runs"]
 
+    # -- data quality check runs (deep profiling + LLM anomaly analysis) ----- #
+    def create_quality_run(self, connection_id: str, scope: dict[str, Any],
+                           thresholds: dict[str, Any], focus_notes: str) -> dict[str, Any]:
+        with self._lock:
+            run = {
+                "id": f"qcr_{int(time.time()*1000)}", "connection_id": connection_id,
+                "scope": scope, "thresholds": thresholds, "focus_notes": focus_notes,
+                "status": "queued", "progress": 0.0, "phase": None, "logs": [],
+                "created_at": time.time(), "plan": None, "tables": [], "cancel_requested": False,
+                "pending_question": None, "question_answer": None,
+            }
+            self._db["quality_runs"].insert(0, run)
+            self._db["quality_runs"] = self._db["quality_runs"][:30]
+            self._bump("quality_run.create", run["id"])
+            return run
+
+    def update_quality_run(self, run_id: str, patch: dict[str, Any]):
+        with self._lock:
+            for r in self._db["quality_runs"]:
+                if r["id"] == run_id:
+                    r.update(patch)
+                    break
+            self._flush()
+
+    def append_quality_run_log(self, run_id: str, entry: dict[str, Any]):
+        with self._lock:
+            for r in self._db["quality_runs"]:
+                if r["id"] == run_id:
+                    r["logs"].append(entry)
+                    r["logs"] = r["logs"][-400:]
+                    break
+            self._flush()
+
+    def get_quality_run(self, run_id: str) -> dict[str, Any] | None:
+        return next((r for r in self._db["quality_runs"] if r["id"] == run_id), None)
+
+    def quality_runs(self): return self._db["quality_runs"]
+
+    def request_quality_run_cancel(self, run_id: str) -> bool:
+        with self._lock:
+            for r in self._db["quality_runs"]:
+                if r["id"] == run_id:
+                    if r["status"] not in ("queued", "running"):
+                        return False
+                    r["cancel_requested"] = True
+                    self._flush()
+                    return True
+            return False
+
+    def is_quality_run_cancel_requested(self, run_id: str) -> bool:
+        r = self.get_quality_run(run_id)
+        return bool(r and r.get("cancel_requested"))
+
+    def answer_quality_run_question(self, run_id: str, answer: str):
+        with self._lock:
+            for r in self._db["quality_runs"]:
+                if r["id"] == run_id:
+                    r["question_answer"] = answer
+                    self._flush()
+                    return
+
+    def get_quality_run_answer(self, run_id: str) -> str | None:
+        r = self.get_quality_run(run_id)
+        return (r or {}).get("question_answer")
+
+    def delete_quality_run(self, run_id: str):
+        with self._lock:
+            self._db["quality_runs"] = [r for r in self._db["quality_runs"] if r["id"] != run_id]
+            self._bump("quality_run.delete", run_id)
+
     # -- settings ------------------------------------------------------------ #
     def update_settings(self, patch: dict[str, Any]):
         with self._lock:
@@ -799,6 +1014,23 @@ class Store:
             if "row_fetch_limit" in patch and patch["row_fetch_limit"] is not None:
                 cfg["row_fetch_limit"] = max(1, int(patch["row_fetch_limit"]))
             self._bump("settings.connectors", f"row_fetch_limit={cfg.get('row_fetch_limit')}")
+            return cfg
+
+    @property
+    def alert_settings(self) -> dict[str, Any]:
+        return self._db["settings"].get("alerts", {})
+
+    def update_alert_settings(self, patch: dict[str, Any]):
+        with self._lock:
+            cfg = self._db["settings"].setdefault("alerts", {})
+            for k in ("quality_score_warn", "quality_score_critical", "row_drift_warn_pct", "stale_days_warn"):
+                if patch.get(k) is not None:
+                    cfg[k] = max(0, int(patch[k]))
+            if patch.get("null_ratio_warn") is not None:
+                cfg["null_ratio_warn"] = max(0.0, min(1.0, float(patch["null_ratio_warn"])))
+            if patch.get("require_pii_validation") is not None:
+                cfg["require_pii_validation"] = bool(patch["require_pii_validation"])
+            self._bump("settings.alerts", "updated")
             return cfg
 
     @property
@@ -872,11 +1104,59 @@ class Store:
             self._db["sessions"] = {t: s for t, s in self._db["sessions"].items() if s.get("user_id") != uid}
             self._bump("user.delete", uid)
 
+    # -- notifications ------------------------------------------------------------ #
+    # Per-user read state, not per-user targeting (this is a shared workspace, not
+    # multi-tenant) — 'audience' controls who a notification is even visible to,
+    # 'read_by' tracks which of those users have seen it. Never version-bumping:
+    # these are operational, not catalog content, so bumping here would spuriously
+    # 409 every other open tab on every pipeline run / user edit.
+    def add_notification(self, *, audience: str, title: str, message: str,
+                         kind: str = "info", category: str = "system",
+                         user_id: str | None = None, link: dict[str, Any] | None = None) -> dict[str, Any]:
+        with self._lock:
+            n = {
+                "id": f"note_{int(time.time()*1000)}_{secrets.token_hex(3)}",
+                "audience": audience, "user_id": user_id,
+                "title": title, "message": message, "kind": kind, "category": category,
+                "link": link, "created_at": time.time(), "read_by": [],
+            }
+            self._db["notifications"].insert(0, n)
+            self._db["notifications"] = self._db["notifications"][:500]
+            self._flush()
+            return n
+
+    def notifications_for(self, user: dict[str, Any]) -> list[dict[str, Any]]:
+        is_admin = user.get("role") == "admin"
+        out = []
+        for n in self._db["notifications"]:
+            visible = (n["audience"] == "all" or (n["audience"] == "admins" and is_admin)
+                      or (n["audience"] == "user" and n.get("user_id") == user["id"]))
+            if visible:
+                out.append({**n, "read": user["id"] in (n.get("read_by") or [])})
+        return out[:100]
+
+    def mark_notification_read(self, nid: str, user_id: str):
+        with self._lock:
+            n = next((x for x in self._db["notifications"] if x["id"] == nid), None)
+            if n and user_id not in n["read_by"]:
+                n["read_by"].append(user_id)
+                self._flush()
+
+    def mark_all_notifications_read(self, user: dict[str, Any]):
+        with self._lock:
+            for n in self.notifications_for(user):
+                if not n["read"]:
+                    self.mark_notification_read(n["id"], user["id"])
+
     # -- sessions ---------------------------------------------------------------- #
     def create_session(self, token: str, user_id: str, ttl_seconds: int = 60 * 60 * 24 * 30) -> dict[str, Any]:
         with self._lock:
-            session = {"user_id": user_id, "created_at": time.time(),
-                       "expires_at": time.time() + ttl_seconds}
+            now = time.time()
+            # opportunistic cleanup of expired sessions on every login — keeps the
+            # sessions dict from growing unbounded across hundreds of users over time
+            self._db["sessions"] = {t: s for t, s in self._db["sessions"].items()
+                                    if s.get("expires_at", 0) > now}
+            session = {"user_id": user_id, "created_at": now, "expires_at": now + ttl_seconds}
             self._db["sessions"][token] = session
             self._flush()  # not version-bumping (not part of catalog state)
             return session

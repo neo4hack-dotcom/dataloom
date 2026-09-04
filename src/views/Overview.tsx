@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import {
-  Table2, Columns3, GitCompare, Workflow, ShieldAlert, Sparkles,
+  Table2, Columns3, GitCompare, Workflow, ShieldAlert,
   Database, TrendingUp, Lock, HeartPulse, Flame, Eye,
 } from "lucide-react";
 import { useCatalog } from "../store";
@@ -35,7 +35,7 @@ export function Overview({ goto }: { goto: (t: Tab) => void }) {
   const healthByDs = useMemo(() => {
     const datasets = state?.datasets ?? [];
     const docs = state?.docs ?? {};
-    return datasets.map((d) => ({ ds: d, health: computeDatasetHealth(d, docs[d.id]) }));
+    return datasets.map((d) => ({ ds: d, health: computeDatasetHealth(d, docs[d.id], state?.settings.alerts) }));
   }, [state]);
 
   const avgHealth = healthByDs.length
@@ -59,23 +59,6 @@ export function Overview({ goto }: { goto: (t: Tab) => void }) {
 
   return (
     <div className="space-y-5">
-      {/* Hero */}
-      <div className="card relative overflow-hidden p-6">
-        <div className="absolute -right-12 -top-12 h-48 w-48 rounded-full bg-gradient-to-br from-loom-500/20 to-loom-700/10 blur-2xl" />
-        <div className="relative flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-loom-500">
-              <Sparkles size={14} /> Autonomous Catalog
-            </div>
-            <h2 className="mt-1 text-2xl font-bold">Weave your data dictionary</h2>
-            <p className="mt-1 max-w-xl text-sm text-slate-500">
-              Value-fingerprinting, key detection via real overlap tests, and enrichment
-              by local LLM agents — reconstructing your data chains from Connections or Sources &amp; scope.
-            </p>
-          </div>
-        </div>
-      </div>
-
       {!hasData ? (
         <EmptyState
           icon={<Database size={48} />}

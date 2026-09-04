@@ -6,7 +6,10 @@ import { EmptyState, shortDs, semanticColor } from "../lib/ui";
 import { buildLayout } from "../lib/graphLayout";
 
 const EDGE_COLOR: Record<string, string> = {
-  key: "#009f3d", mapping: "#ff6600", manual: "#10b981",
+  key: "#009f3d", mapping: "#ff6600", manual: "#10b981", datamart: "#8b5cf6",
+};
+const EDGE_LABEL: Record<string, string> = {
+  key: "key", mapping: "mapping", manual: "manual", datamart: "datamart",
 };
 
 export function Lineage() {
@@ -53,7 +56,7 @@ export function Lineage() {
             {Object.entries(EDGE_COLOR).map(([k, c]) => (
               <span key={k} className="flex items-center gap-1 text-slate-400">
                 <span className="h-2 w-3 rounded" style={{ background: c }} />
-                {k === "key" ? "key" : k === "mapping" ? "mapping" : "manual"}
+                {EDGE_LABEL[k] ?? k}
               </span>
             ))}
           </span>
@@ -216,7 +219,7 @@ function AddEdgePanel({ datasets }: { datasets: { id: string; schema: string; na
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [via, setVia] = useState("");
-  const [kind, setKind] = useState<"manual" | "key" | "mapping">("manual");
+  const [kind, setKind] = useState<"manual" | "key" | "mapping" | "datamart">("manual");
 
   const add = async () => {
     if (!from || !to) { toast("err", "Select both tables"); return; }
@@ -262,6 +265,7 @@ function AddEdgePanel({ datasets }: { datasets: { id: string; schema: string; na
             <option value="manual">Manual</option>
             <option value="key">Key</option>
             <option value="mapping">Mapping</option>
+            <option value="datamart">Datamart</option>
           </select>
         </div>
       </div>

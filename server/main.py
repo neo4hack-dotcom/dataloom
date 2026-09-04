@@ -11,6 +11,7 @@ import contextlib
 import os
 import threading
 import time
+import anyio.to_thread
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -19,7 +20,7 @@ from typing import Any
 
 import auth
 from store import Store
-from engine import llm, agents, explore
+from engine import llm, agents, explore, mcp_client, quality_checks, mcp_library, datamarts
 from engine import search as search_engine
 from engine.connectors import build_connector
 from engine.query_registry import registry as query_registry, QueryCancelled
@@ -35,6 +36,10 @@ _mcp_asgi_app, _mcp_session_manager = create_mcp_app(store)
 
 @contextlib.asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # Every sync `def` route (nearly all of them) runs in Starlette's shared
+    # threadpool, capped at 40 concurrent threads by default — too little headroom
+    # for 200+ concurrently connected users each issuing occasional requests.
+    anyio.to_thread.current_default_thread_limiter().total_tokens = 200
     async with _mcp_session_manager.run():
         yield
 
@@ -63,6 +68,11 @@ async def _auth_gate(request: Request, call_next):
     user = store.get_user(session["user_id"]) if session else None
     if not user or not user.get("active", True):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if (user.get("role") == auth.VIEWER and request.method not in ("GET", "HEAD", "OPTIONS")
+            and not auth.viewer_write_allowed(path)):
+        return JSONResponse({"error": "read_only",
+                             "message": "Your account has read-only access — ask an admin for edit rights."},
+                            status_code=403)
     request.state.user = user
     return await call_next(request)
 
@@ -164,6 +174,25 @@ def auth_me(request: Request):
     return {"user": auth.public_user(request.state.user)}
 
 
+# -- notifications ------------------------------------------------------------- #
+@app.get("/api/notifications")
+def list_notifications(request: Request):
+    items = store.notifications_for(request.state.user)
+    return {"notifications": items, "unread_count": sum(1 for n in items if not n["read"])}
+
+
+@app.post("/api/notifications/{nid}/read")
+def mark_notification_read(nid: str, request: Request):
+    store.mark_notification_read(nid, request.state.user["id"])
+    return {"ok": True}
+
+
+@app.post("/api/notifications/read-all")
+def mark_all_notifications_read(request: Request):
+    store.mark_all_notifications_read(request.state.user)
+    return {"ok": True}
+
+
 class UserIn(BaseModel):
     username: str
     password: str
@@ -187,6 +216,9 @@ def create_user(body: UserIn, request: Request):
         user = store.add_user(body.username.strip(), auth.hash_password(body.password), body.role)
     except ValueError as e:
         raise HTTPException(409, str(e))
+    store.add_notification(audience="admins", category="user_mgmt", kind="info",
+                           title="New user created", message=f"{user['username']} ({body.role})",
+                           link={"tab": "users"})
     return {"user": auth.public_user(user)}
 
 
@@ -201,7 +233,7 @@ def update_user(uid: str, body: UserPatchIn, request: Request):
     admin = require_admin(request)
     if body.role is not None and body.role not in auth.ROLES:
         raise HTTPException(422, f"role must be one of {auth.ROLES}")
-    if uid == admin["id"] and (body.active is False or body.role == auth.MEMBER):
+    if uid == admin["id"] and (body.active is False or (body.role is not None and body.role != auth.ADMIN)):
         raise HTTPException(400, "You cannot demote or deactivate your own account")
     patch: dict[str, Any] = {}
     if body.role is not None:
@@ -216,6 +248,11 @@ def update_user(uid: str, body: UserPatchIn, request: Request):
         user = store.update_user(uid, patch)
     except ValueError as e:
         raise HTTPException(404, str(e))
+    if body.role is not None or body.active is not None:
+        detail = f"{user['username']}" + (f" → {body.role}" if body.role is not None else "") + \
+            (" (deactivated)" if body.active is False else " (reactivated)" if body.active is True else "")
+        store.add_notification(audience="admins", category="user_mgmt", kind="info",
+                               title="User access changed", message=detail, link={"tab": "users"})
     return {"user": auth.public_user(user)}
 
 
@@ -224,7 +261,11 @@ def delete_user(uid: str, request: Request):
     admin = require_admin(request)
     if uid == admin["id"]:
         raise HTTPException(400, "You cannot delete your own account")
+    target = store.get_user(uid)
     store.delete_user(uid)
+    if target:
+        store.add_notification(audience="admins", category="user_mgmt", kind="warning",
+                               title="User deleted", message=target["username"], link={"tab": "users"})
     return {"ok": True}
 
 
@@ -253,6 +294,25 @@ def update_connector_settings(body: ConnectorSettingsIn, request: Request,
     require_admin(request)
     guard(x_base_version)
     cfg = store.update_connector_settings(body.model_dump())
+    return {"ok": True, "config": cfg, "version": store.version}
+
+
+# -- data-quality alert thresholds (admin) -------------------------------------- #
+class AlertSettingsIn(BaseModel):
+    quality_score_warn: int | None = None
+    quality_score_critical: int | None = None
+    null_ratio_warn: float | None = None
+    row_drift_warn_pct: int | None = None
+    require_pii_validation: bool | None = None
+    stale_days_warn: int | None = None
+
+
+@app.post("/api/settings/alerts")
+def update_alert_settings(body: AlertSettingsIn, request: Request,
+                          x_base_version: int | None = Header(default=None)):
+    require_admin(request)
+    guard(x_base_version)
+    cfg = store.update_alert_settings(body.model_dump())
     return {"ok": True, "config": cfg, "version": store.version}
 
 
@@ -289,6 +349,9 @@ def rotate_mcp_token(request: Request, x_base_version: int | None = Header(defau
     guard(x_base_version)
     token = auth.create_token()
     store.set_mcp_token(auth.hash_token(token), token[:8])
+    store.add_notification(audience="admins", category="security", kind="warning",
+                           title="MCP token rotated", message="The previous token no longer works.",
+                           link={"tab": "mcp"})
     return {"token": token, "prefix": token[:8], "version": store.version}
 
 
@@ -297,6 +360,9 @@ def revoke_mcp_token(request: Request, x_base_version: int | None = Header(defau
     require_admin(request)
     guard(x_base_version)
     store.set_mcp_token(None, None)
+    store.add_notification(audience="admins", category="security", kind="warning",
+                           title="MCP token revoked", message="The MCP server can no longer be reached with a token.",
+                           link={"tab": "mcp"})
     return {"ok": True, "version": store.version}
 
 
@@ -341,7 +407,14 @@ def add_connection(body: ConnectionIn, x_base_version: int | None = Header(defau
 @app.delete("/api/connections/{cid}")
 def del_connection(cid: str, x_base_version: int | None = Header(default=None)):
     guard(x_base_version)
+    conn = store.get_connection(cid)
+    ds_count = len([d for d in store.snapshot()["datasets"] if d["connection_id"] == cid])
     store.delete_connection(cid)
+    if conn:
+        store.add_notification(audience="all", category="connection", kind="info",
+                               title="Connection removed",
+                               message=f"{conn['name']}" + (f" and {ds_count} table(s)" if ds_count else ""),
+                               link={"tab": "connections"})
     return {"ok": True, "version": store.version}
 
 
@@ -392,6 +465,153 @@ def discover_tables(cid: str, x_base_version: int | None = Header(default=None))
            for t in tables]
     store.set_discovered_tables(cid, inv)
     return {"ok": True, "count": len(inv), "tables": inv, "version": store.version}
+
+
+# -- MCP source: connect OUT to another app's MCP server as a data source ---- #
+@app.post("/api/connections/{cid}/mcp/discover-mapping")
+def mcp_discover_mapping(cid: str):
+    """Lists the remote MCP server's tools and has the local LLM propose a
+    table/column mapping from them, sampling the safely-callable ones live to
+    maximise coverage. Preview only — nothing is persisted until the client
+    calls mcp/mapping to apply the (possibly human-edited) result."""
+    conn = store.get_connection(cid)
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    if conn.get("type") != "mcp":
+        raise HTTPException(400, "not an MCP connection")
+    cfg = conn.get("config", {})
+    url = cfg.get("url")
+    if not url:
+        raise HTTPException(400, "connection has no MCP url configured")
+    token = cfg.get("token") or None
+    try:
+        tools = mcp_client.discover_sync(url, token)
+    except Exception as e:
+        raise HTTPException(422, f"MCP discovery failed: {e}")
+    try:
+        mapping = explore.map_mcp_tools(url, token, tools, model=conn.get("llm_model") or _llm_model())
+    except explore.LLMUnavailable:
+        raise HTTPException(503, "Local LLM unavailable")
+    return {"ok": True, "tool_count": len(tools), "tools": tools, "mapping": mapping}
+
+
+class McpMappingIn(BaseModel):
+    tables: list[dict[str, Any]]
+
+
+@app.post("/api/connections/{cid}/mcp/mapping")
+def mcp_apply_mapping(cid: str, body: McpMappingIn, x_base_version: int | None = Header(default=None)):
+    """Persists a (possibly human-reviewed) MCP table/column mapping — from
+    then on this connection's list_tables/get_columns read it directly, with
+    no further LLM calls, exactly like any other connector."""
+    guard(x_base_version)
+    conn = store.get_connection(cid)
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    config = {**conn.get("config", {}), "mcp_mapping": {"tables": body.tables, "mapped_at": time.time()}}
+    conn = store.update_connection(cid, {"config": config})
+    return {"ok": True, "connection": conn, "version": store.version}
+
+
+# -- MCP Library: full tool inventory + pasted code/SQL extraction ----------- #
+@app.post("/api/connections/{cid}/mcp/tools")
+def mcp_refresh_tools(cid: str, x_base_version: int | None = Header(default=None)):
+    """Rediscover and persist the MCP server's FULL tool inventory (every
+    tool, not just the ones proposed as tables) so the MCP Library can browse
+    it — including action/write tools — without re-hitting the remote server."""
+    guard(x_base_version)
+    conn = store.get_connection(cid)
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    if conn.get("type") != "mcp":
+        raise HTTPException(400, "not an MCP connection")
+    cfg = conn.get("config", {})
+    url = cfg.get("url")
+    if not url:
+        raise HTTPException(400, "connection has no MCP url configured")
+    try:
+        tools = mcp_client.discover_sync(url, cfg.get("token") or None)
+    except Exception as e:
+        raise HTTPException(422, f"MCP discovery failed: {e}")
+    store.set_mcp_tools(cid, tools)
+    return {"ok": True, "tools": tools, "version": store.version}
+
+
+@app.get("/api/connections/{cid}/mcp/coverage")
+def mcp_coverage(cid: str):
+    conn = store.get_connection(cid)
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    return {"ok": True, "gaps": mcp_library.coverage_gaps(conn)}
+
+
+def _run_mcp_extraction(cid: str, conn: dict[str, Any], entry: dict[str, Any]):
+    tool_meta = next((t for t in conn.get("mcp_tools") or [] if t.get("name") == entry["tool"]), None)
+    mapped = next((t for t in ((conn.get("config") or {}).get("mcp_mapping") or {}).get("tables", [])
+                  if t.get("tool") == entry["tool"]), None)
+    mapped_columns = [c["name"] for c in mapped["columns"]] if mapped else None
+    try:
+        extraction = mcp_library.extract_query_info(
+            entry["tool"], (tool_meta or {}).get("description", ""), entry["language"], entry["code"],
+            mapped_columns=mapped_columns, model=conn.get("llm_model") or _llm_model())
+    except mcp_library.LLMUnavailable:
+        raise HTTPException(503, "Local LLM unavailable")
+    snap = store.snapshot()
+    extraction["link_candidates"] = mcp_library.match_link_candidates(
+        snap, extraction.get("tables_referenced", []), cid)
+    # mutates `entry` in place (same dict object stored on the connection)
+    store.update_mcp_query(cid, entry["id"], {"extraction": extraction, "extracted_at": time.time()})
+
+
+class McpQueryIn(BaseModel):
+    tool: str
+    title: str = ""
+    language: str = "sql"  # sql | code
+    code: str
+
+
+@app.post("/api/connections/{cid}/mcp/queries")
+def mcp_add_query(cid: str, body: McpQueryIn, x_base_version: int | None = Header(default=None)):
+    """Paste the real SQL/code behind an MCP tool — the local LLM extracts a
+    functional description, the tables/columns it actually touches, and (if
+    that tool is already mapped) reconciles the code against the mapped
+    columns, catching drift a human skimming a live sample could easily miss.
+    Also proposes cross-connection lineage link candidates from the
+    referenced table names."""
+    guard(x_base_version)
+    conn = store.get_connection(cid)
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    if conn.get("type") != "mcp":
+        raise HTTPException(400, "not an MCP connection")
+    entry = store.add_mcp_query(cid, {
+        "tool": body.tool, "title": body.title or body.tool,
+        "language": body.language, "code": body.code, "extraction": None,
+    })
+    _run_mcp_extraction(cid, conn, entry)
+    return {"ok": True, "query": entry, "version": store.version}
+
+
+@app.post("/api/connections/{cid}/mcp/queries/{qid}/reextract")
+def mcp_reextract_query(cid: str, qid: str, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    conn = store.get_connection(cid)
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    entry = next((q for q in conn.get("mcp_queries", []) if q["id"] == qid), None)
+    if not entry:
+        raise HTTPException(404, "query not found")
+    _run_mcp_extraction(cid, conn, entry)
+    return {"ok": True, "query": entry, "version": store.version}
+
+
+@app.delete("/api/connections/{cid}/mcp/queries/{qid}")
+def mcp_delete_query(cid: str, qid: str, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    if not store.get_connection(cid):
+        raise HTTPException(404, "connection not found")
+    store.delete_mcp_query(cid, qid)
+    return {"ok": True, "version": store.version}
 
 
 class ScopeIn(BaseModel):
@@ -478,6 +698,90 @@ def cancel_run(run_id: str):
     ok = store.request_run_cancel(run_id)
     if not ok:
         raise HTTPException(409, "run already finished")
+    return {"ok": True}
+
+
+# -- data quality checks (independent deep-profiling module) ----------------- #
+class QualityThresholdsIn(BaseModel):
+    zscore: float = 3.0
+    iqr_multiplier: float = 1.5
+    outlier_pct_high: float = 0.05
+    duplicate_pct_high: float = 0.05
+    categorical_cardinality_max: float = 0.5
+    pattern_dominance_min: float = 0.9
+    value_sample_size: int = 3000
+    row_sample_size: int = 2000
+
+
+class QualityRunIn(BaseModel):
+    connection_id: str
+    scope: dict[str, list[str] | None]  # dataset_id -> column names, or null for every column
+    thresholds: QualityThresholdsIn = QualityThresholdsIn()
+    focus_notes: str = ""
+
+
+@app.post("/api/quality-checks/runs")
+def launch_quality_run(body: QualityRunIn, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    conn = store.get_connection(body.connection_id)
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    if not body.scope:
+        raise HTTPException(400, "select at least one table")
+    run = store.create_quality_run(body.connection_id, body.scope, body.thresholds.model_dump(), body.focus_notes)
+    t = threading.Thread(target=quality_checks.run_quality_check, args=(store, run["id"]), daemon=True)
+    t.start()
+    return {"run": run, "version": store.version}
+
+
+@app.get("/api/quality-checks/runs")
+def list_quality_runs():
+    # trimmed: the list view doesn't need each run's full findings payload
+    return {"runs": [{k: v for k, v in r.items() if k not in ("tables", "logs")}
+                     for r in store.quality_runs()]}
+
+
+@app.get("/api/quality-checks/runs/{run_id}")
+def get_quality_run(run_id: str):
+    run = store.get_quality_run(run_id)
+    if not run:
+        raise HTTPException(404, "run not found")
+    return run
+
+
+@app.post("/api/quality-checks/runs/{run_id}/cancel")
+def cancel_quality_run(run_id: str):
+    if not store.get_quality_run(run_id):
+        raise HTTPException(404, "run not found")
+    ok = store.request_quality_run_cancel(run_id)
+    if not ok:
+        raise HTTPException(409, "run already finished")
+    return {"ok": True}
+
+
+class QualityAnswerIn(BaseModel):
+    answer: str
+
+
+@app.post("/api/quality-checks/runs/{run_id}/answer")
+def answer_quality_run(run_id: str, body: QualityAnswerIn):
+    """Answer the agent's one clarifying question so a paused run can resume."""
+    run = store.get_quality_run(run_id)
+    if not run:
+        raise HTTPException(404, "run not found")
+    if run.get("status") != "waiting_input":
+        raise HTTPException(409, "this run isn't waiting for input")
+    if not body.answer.strip():
+        raise HTTPException(422, "answer must not be empty")
+    store.answer_quality_run_question(run_id, body.answer.strip())
+    return {"ok": True}
+
+
+@app.delete("/api/quality-checks/runs/{run_id}")
+def delete_quality_run(run_id: str):
+    if not store.get_quality_run(run_id):
+        raise HTTPException(404, "run not found")
+    store.delete_quality_run(run_id)
     return {"ok": True}
 
 
@@ -585,6 +889,100 @@ def remove_dataset_tag(ds_id: str, tag: str, x_base_version: int | None = Header
     guard(x_base_version)
     store.remove_dataset_tag(ds_id, tag)
     return {"ok": True, "version": store.version}
+
+
+# -- datamarts: mark/unmark one table, or bulk-import from a registry table -- #
+class DatamartIn(BaseModel):
+    sql: str
+    language: str = "sql"  # sql | code
+
+
+@app.post("/api/datasets/{ds_id:path}/datamart")
+def set_dataset_datamart(ds_id: str, body: DatamartIn, x_base_version: int | None = Header(default=None)):
+    """Mark a table as a datamart, with its generation SQL/code — the local LLM
+    reads it to describe what it does and which raw tables feed it, and
+    proposes lineage links to those tables (accepted from the Identity Card)."""
+    guard(x_base_version)
+    snap = store.snapshot()
+    ds = next((d for d in snap["datasets"] if d["id"] == ds_id), None)
+    if not ds:
+        raise HTTPException(404, "dataset not found")
+    conn = store.get_connection(ds["connection_id"])
+    try:
+        extraction = mcp_library.extract_query_info(
+            ds["name"], (snap["docs"].get(ds_id) or {}).get("definition") or "",
+            body.language, body.sql, model=(conn or {}).get("llm_model") or _llm_model())
+    except mcp_library.LLMUnavailable:
+        raise HTTPException(503, "Local LLM unavailable")
+    extraction["link_candidates"] = datamarts.match_source_tables(
+        snap, extraction.get("tables_referenced", []), ds_id)
+    dm = store.set_dataset_datamart(ds_id, {
+        "sql": body.sql, "language": body.language, "extraction": extraction, "analyzed_at": time.time()})
+    return {"ok": True, "datamart": dm, "version": store.version}
+
+
+@app.delete("/api/datasets/{ds_id:path}/datamart")
+def clear_dataset_datamart(ds_id: str, x_base_version: int | None = Header(default=None)):
+    guard(x_base_version)
+    if not store.get_dataset_doc(ds_id):
+        raise HTTPException(404, "dataset not found")
+    store.clear_dataset_datamart(ds_id)
+    return {"ok": True, "version": store.version}
+
+
+class DatamartRegistryDetectIn(BaseModel):
+    dataset_id: str
+
+
+@app.post("/api/datamarts/detect-registry")
+def datamarts_detect_registry(body: DatamartRegistryDetectIn):
+    """Given a table that lists many datamarts (one per row), have the LLM
+    identify which column holds the datamart name and which holds its
+    generation SQL — preview only, reviewed before /import-registry runs."""
+    snap = store.snapshot(trim=False)
+    ds = next((d for d in snap["datasets"] if d["id"] == body.dataset_id), None)
+    if not ds:
+        raise HTTPException(404, "dataset not found")
+    conn = store.get_connection(ds["connection_id"])
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    try:
+        rows = build_connector(conn, store=store, source="datamart-registry").sample_rows(ds["schema"], ds["name"], limit=20)
+    except Exception as e:
+        raise HTTPException(422, f"Could not sample rows: {e}")
+    try:
+        out = datamarts.detect_registry_roles(ds, rows, model=conn.get("llm_model") or _llm_model())
+    except datamarts.LLMUnavailable:
+        raise HTTPException(503, "Local LLM unavailable")
+    return {"ok": True, **out, "columns": [c["name"] for c in ds["columns"]], "sample": rows[:8]}
+
+
+class DatamartRegistryImportIn(BaseModel):
+    dataset_id: str
+    roles: dict[str, str | None]
+    limit: int = 50
+
+
+@app.post("/api/datamarts/import-registry")
+def datamarts_import_registry(body: DatamartRegistryImportIn, x_base_version: int | None = Header(default=None)):
+    """Bulk pass: for every row of the registry table, mark/create the
+    datamart it describes, extract its generation SQL, and auto-link any
+    exact-name source-table match — see engine.datamarts.import_registry."""
+    guard(x_base_version)
+    ds = next((d for d in store.snapshot()["datasets"] if d["id"] == body.dataset_id), None)
+    if not ds:
+        raise HTTPException(404, "dataset not found")
+    conn = store.get_connection(ds["connection_id"])
+    if not conn:
+        raise HTTPException(404, "connection not found")
+    if not body.roles.get("name_col") or not body.roles.get("sql_col"):
+        raise HTTPException(400, "name_col and sql_col are required")
+    try:
+        result = datamarts.import_registry(store, ds, body.roles, conn, limit=body.limit,
+                                           model=conn.get("llm_model") or _llm_model())
+    except Exception as e:
+        raise HTTPException(422, f"Registry import failed: {e}")
+    return {"ok": True, **result, "version": store.version}
 
 
 @app.post("/api/columns/{ds_id:path}/{col}/tags")
@@ -1385,6 +1783,28 @@ def llm_explain_relationship(body: ExplainRelIn):
     store.cache_relationship_explanation(
         body.child_dataset_id, body.child_column, body.parent_dataset_id, body.parent_column, explanation)
     return {"ok": True, "explanation": explanation, "version": store.version}
+
+
+class ExplainQaIn(BaseModel):
+    dataset_id: str
+    message: str
+    severity: str
+
+
+@app.post("/api/llm/explain-quality-issue")
+def llm_explain_quality_issue(body: ExplainQaIn):
+    """Feature 6 — plain-business explanation + suggested fix for one QA issue.
+    Not persisted server-side (the qa_issues list itself is fully recomputed on
+    every QA Reviewer run) — the client only calls this on explicit user click."""
+    snap = store.snapshot(trim=False)
+    try:
+        explanation = explore.explain_qa_issue(
+            snap, body.dataset_id, body.message, body.severity, model=_llm_model())
+    except explore.LLMUnavailable:
+        raise HTTPException(503, "Local LLM unavailable")
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return {"ok": True, "explanation": explanation}
 
 
 # -- table identity card + content synthesis (cached) ------------------------ #

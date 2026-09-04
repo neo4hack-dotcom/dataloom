@@ -15,7 +15,17 @@ import bcrypt
 
 ADMIN = "admin"
 MEMBER = "member"
-ROLES = (ADMIN, MEMBER)
+VIEWER = "viewer"
+ROLES = (ADMIN, MEMBER, VIEWER)
+
+# Non-GET requests a viewer (read-only) role may still make — asking the local
+# LLM a question and searching are "navigating the platform", not editing it.
+VIEWER_WRITE_ALLOWLIST = {"/api/search", "/api/llm/copilot", "/api/auth/logout"}
+
+
+def viewer_write_allowed(path: str) -> bool:
+    # marking a notification read is a per-user UI action, not a catalog edit
+    return path in VIEWER_WRITE_ALLOWLIST or path.startswith("/api/notifications/")
 
 
 def hash_password(password: str) -> str:

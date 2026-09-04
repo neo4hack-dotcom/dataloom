@@ -34,6 +34,16 @@ body {
   .btn-primary {
     @apply btn bg-loom-600 text-white hover:bg-loom-700 shadow-sm shadow-loom-600/30;
   }
+  .btn-ai {
+    @apply btn bg-loom-600 text-white hover:bg-loom-700 shadow-sm shadow-loom-600/30;
+  }
+  .btn-ai-outline {
+    @apply btn border border-loom-500/40 text-loom-600 hover:bg-loom-500/10
+           dark:border-loom-400/40 dark:text-loom-400;
+  }
+  .btn-danger {
+    @apply btn bg-rose-600 text-white hover:bg-rose-700 shadow-sm shadow-rose-600/30;
+  }
   .btn-ghost {
     @apply btn text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800;
   }

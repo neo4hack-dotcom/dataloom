@@ -1,6 +1,7 @@
 import type {
-  AgentRun, CatalogState, ColumnLineageEdge, Connection, ConnectorSettings, DiscoveredTable, Domain, Health,
-  LlmConfig, LlmTest, McpConfig, Owner, QueryLogEntry, SearchHit, User,
+  AgentRun, AlertSettings, CatalogState, ColumnLineageEdge, Connection, ConnectorSettings, DatamartInfo, DiscoveredTable,
+  Domain, Health, LlmConfig, LlmTest, McpConfig, McpCoverageGap, McpMappingTable, McpQueryDef, McpTool, Notification, Owner,
+  QualityRun, QualityThresholds, QueryLogEntry, Role, SearchHit, User,
 } from "./types";
 
 export class VersionConflict extends Error {
@@ -73,6 +74,30 @@ export const api = {
   }),
   pingConnection: (id: string) => req<{ ok: boolean }>(`/connections/${id}/ping`, { method: "POST" }),
 
+  // -- MCP source: discover tools + LLM-assisted table/column mapping --
+  mcpDiscoverMapping: (cid: string) =>
+    req<{ ok: boolean; tool_count: number; tools: McpTool[]; mapping: { tables: McpMappingTable[] } }>(
+      `/connections/${cid}/mcp/discover-mapping`, { method: "POST" }),
+  mcpApplyMapping: (cid: string, tables: McpMappingTable[], baseVersion: number) =>
+    req<{ ok: boolean; connection: Connection; version: number }>(
+      `/connections/${cid}/mcp/mapping`, { method: "POST", body: JSON.stringify({ tables }), baseVersion }),
+
+  // -- MCP Library: full tool inventory + pasted code/SQL extraction --
+  mcpRefreshTools: (cid: string, baseVersion: number) =>
+    req<{ ok: boolean; tools: McpTool[]; version: number }>(
+      `/connections/${cid}/mcp/tools`, { method: "POST", baseVersion }),
+  mcpCoverage: (cid: string) =>
+    req<{ ok: boolean; gaps: McpCoverageGap[] }>(`/connections/${cid}/mcp/coverage`),
+  mcpAddQuery: (cid: string, body: { tool: string; title?: string; language: "sql" | "code"; code: string }, baseVersion: number) =>
+    req<{ ok: boolean; query: McpQueryDef; version: number }>(
+      `/connections/${cid}/mcp/queries`, { method: "POST", body: JSON.stringify(body), baseVersion }),
+  mcpReextractQuery: (cid: string, qid: string, baseVersion: number) =>
+    req<{ ok: boolean; query: McpQueryDef; version: number }>(
+      `/connections/${cid}/mcp/queries/${qid}/reextract`, { method: "POST", baseVersion }),
+  mcpDeleteQuery: (cid: string, qid: string, baseVersion: number) =>
+    req<{ ok: boolean; version: number }>(
+      `/connections/${cid}/mcp/queries/${qid}`, { method: "DELETE", baseVersion }),
+
   // -- discovery & scope (big-volume sources) --
   discover: (cid: string, baseVersion: number) =>
     req<{ ok: boolean; count: number; tables: DiscoveredTable[]; version: number }>(
@@ -93,6 +118,21 @@ export const api = {
     }),
   getRun: (id: string) => req<AgentRun>(`/runs/${id}`),
   cancelRun: (id: string) => req<{ ok: boolean }>(`/runs/${id}/cancel`, { method: "POST" }),
+
+  // -- data quality checks --
+  launchQualityRun: (
+    body: { connection_id: string; scope: Record<string, string[] | null>;
+           thresholds?: Partial<QualityThresholds>; focus_notes?: string },
+    baseVersion: number
+  ) => req<{ run: QualityRun; version: number }>("/quality-checks/runs", {
+    method: "POST", body: JSON.stringify(body), baseVersion,
+  }),
+  listQualityRuns: () => req<{ runs: Omit<QualityRun, "tables" | "logs">[] }>("/quality-checks/runs"),
+  getQualityRun: (id: string) => req<QualityRun>(`/quality-checks/runs/${id}`),
+  cancelQualityRun: (id: string) => req<{ ok: boolean }>(`/quality-checks/runs/${id}/cancel`, { method: "POST" }),
+  answerQualityRun: (id: string, answer: string) =>
+    req<{ ok: boolean }>(`/quality-checks/runs/${id}/answer`, { method: "POST", body: JSON.stringify({ answer }) }),
+  deleteQualityRun: (id: string) => req<{ ok: boolean }>(`/quality-checks/runs/${id}`, { method: "DELETE" }),
 
   // -- catalog: tables --
   addDataset: (body: { schema_name: string; name: string; connection_id: string; comment?: string }, baseVersion: number) =>
@@ -252,6 +292,10 @@ export const api = {
       method: "POST", body: JSON.stringify(body),
     }),
 
+  explainQaIssue: (body: { dataset_id: string; message: string; severity: string }) =>
+    req<{ ok: boolean; explanation: { explanation: string; suggested_fix: string; risk: string } }>(
+      "/llm/explain-quality-issue", { method: "POST", body: JSON.stringify(body) }),
+
   // -- table identity card + content synthesis (cached) --
   synthesizeTable: (dataset_id: string, baseVersion: number) =>
     req<{ ok: boolean; result: TableSynthesis; version: number }>("/llm/synthesize-table", {
@@ -267,6 +311,22 @@ export const api = {
   mappingApply: (dataset_id: string, roles: Record<string, string | null>, baseVersion: number) =>
     req<{ ok: boolean; edges_added: number; docs_added: number; rows_scanned: number; version: number }>(
       "/mapping/apply", { method: "POST", body: JSON.stringify({ dataset_id, roles }), baseVersion }),
+
+  // -- datamarts --
+  setDatasetDatamart: (dsId: string, sql: string, language: "sql" | "code", baseVersion: number) =>
+    req<{ ok: boolean; datamart: DatamartInfo; version: number }>(
+      `/datasets/${encodeURIComponent(dsId)}/datamart`,
+      { method: "POST", body: JSON.stringify({ sql, language }), baseVersion }),
+  clearDatasetDatamart: (dsId: string, baseVersion: number) =>
+    req<{ ok: boolean; version: number }>(`/datasets/${encodeURIComponent(dsId)}/datamart`, { method: "DELETE", baseVersion }),
+  detectDatamartRegistry: (dataset_id: string) =>
+    req<{ ok: boolean; roles: Record<string, string | null>; confidence: number; reason: string;
+          columns: string[]; sample: Record<string, unknown>[] }>("/datamarts/detect-registry", {
+      method: "POST", body: JSON.stringify({ dataset_id }),
+    }),
+  importDatamartRegistry: (dataset_id: string, roles: Record<string, string | null>, limit: number, baseVersion: number) =>
+    req<{ ok: boolean; processed: number; created: number; matched_existing: number; edges_added: number; failed: number; version: number }>(
+      "/datamarts/import-registry", { method: "POST", body: JSON.stringify({ dataset_id, roles, limit }), baseVersion }),
 
   // -- full backup restore --
   importBackup: (backup: unknown, mode: "replace" | "merge", baseVersion: number) =>
@@ -293,12 +353,19 @@ export const api = {
 
   // -- users (admin) --
   listUsers: () => req<{ users: User[] }>("/users"),
-  createUser: (body: { username: string; password: string; role: "admin" | "member" }) =>
+  createUser: (body: { username: string; password: string; role: Role }) =>
     req<{ user: User }>("/users", { method: "POST", body: JSON.stringify(body) }),
-  updateUser: (id: string, patch: { role?: "admin" | "member"; active?: boolean; password?: string }) =>
+  updateUser: (id: string, patch: { role?: Role; active?: boolean; password?: string }) =>
     req<{ user: User }>(`/users/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteUser: (id: string) =>
     req<{ ok: boolean }>(`/users/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
+  // -- notifications --
+  listNotifications: () => req<{ notifications: Notification[]; unread_count: number }>("/notifications"),
+  markNotificationRead: (id: string) =>
+    req<{ ok: boolean }>(`/notifications/${encodeURIComponent(id)}/read`, { method: "POST" }),
+  markAllNotificationsRead: () =>
+    req<{ ok: boolean }>("/notifications/read-all", { method: "POST" }),
 
   // -- query log --
   listQueries: () => req<{ active: QueryLogEntry[]; recent: QueryLogEntry[] }>("/queries"),
@@ -307,6 +374,11 @@ export const api = {
   // -- connector settings (admin) --
   updateConnectorSettings: (body: ConnectorSettings, baseVersion: number) =>
     req<{ ok: boolean; config: ConnectorSettings; version: number }>("/settings/connectors", {
+      method: "POST", body: JSON.stringify(body), baseVersion,
+    }),
+
+  updateAlertSettings: (body: Partial<AlertSettings>, baseVersion: number) =>
+    req<{ ok: boolean; config: AlertSettings; version: number }>("/settings/alerts", {
       method: "POST", body: JSON.stringify(body), baseVersion,
     }),
 

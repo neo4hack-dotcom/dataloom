@@ -19,6 +19,7 @@ and the API returns a heuristic fallback so the app stays usable offline.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 from . import llm
 
@@ -436,4 +437,172 @@ def explain_relationship(snap: dict, child_ds: str, child_col: str,
     out.setdefault("cardinality", "many-to-one")
     out.setdefault("confidence", 70)
     out.setdefault("caveats", [])
+    return out
+
+
+# --------------------------------------------------------------------------- #
+#  Feature 6 — Data-quality issue explainer                                   #
+# --------------------------------------------------------------------------- #
+_QA_SYSTEM = (
+    "You are a senior data quality engineer reviewing a warehouse. Given one "
+    "data-quality issue and the profiled evidence for the table it was found on, "
+    "explain in plain business language what it means, why it matters, and propose "
+    "one concrete, actionable fix a data steward could apply. "
+    "Reply STRICTLY in JSON: {"
+    "\"explanation\": \"1-2 sentences on what this means and why it matters\", "
+    "\"suggested_fix\": \"1-2 concrete, actionable steps to resolve or triage it\", "
+    "\"risk\": \"low | medium | high\"}. English."
+)
+
+
+def explain_qa_issue(snap: dict, ds_id: str, message: str, severity: str,
+                     model: str | None = None) -> dict[str, Any]:
+    if not llm.is_up():
+        raise LLMUnavailable()
+    ds = _find_dataset(snap, ds_id)
+    if not ds:
+        raise ValueError(f"dataset {ds_id} not found")
+    doc = (snap.get("docs") or {}).get(ds_id, {})
+    prompt = (
+        f"Table: {ds['schema']}.{ds['name']} ({ds['row_estimate']} rows, {len(ds['columns'])} columns).\n"
+        f"Table definition on file: {doc.get('definition') or '(none)'}\n"
+        f"Domain: {doc.get('domain') or '(unknown)'}\n"
+        f"Issue (severity={severity}): {message}\n"
+    )
+    out = llm.generate(system=_QA_SYSTEM, prompt=prompt, model=model)
+    if not isinstance(out, dict) or "_raw" in out:
+        raise LLMUnavailable()
+    out.setdefault("explanation", "")
+    out.setdefault("suggested_fix", "")
+    out.setdefault("risk", severity)
+    return out
+
+
+# --------------------------------------------------------------------------- #
+#  Feature 7 — MCP source mapping (tool surface → table/column inventory)     #
+#                                                                              #
+#  An MCP server declares no schema the way a SQL warehouse does — it exposes #
+#  arbitrary named tools. This maximises catalog coverage from that surface:  #
+#  rank tools by how "listable" they look, sample the safely-callable ones    #
+#  live, then have the LLM propose a table + column for every one that really #
+#  is an enumerable collection of records — grounded in the live sample where #
+#  one was obtainable, the declared input/output schema otherwise.            #
+# --------------------------------------------------------------------------- #
+_MCP_WRITE_HINTS = ("create", "update", "delete", "remove", "set", "put", "patch",
+                    "write", "insert", "modify", "execute", "execut", "run", "send",
+                    "trigger", "cancel", "approve", "reject", "upload")
+_MCP_READ_HINTS = ("list", "get", "search", "query", "find", "fetch", "read", "show", "describe")
+
+
+def _mcp_tool_score(tool: dict[str, Any]) -> int:
+    name = tool["name"].lower()
+    score = 0
+    if any(h in name for h in _MCP_READ_HINTS):
+        score += 2
+    if any(h in name for h in _MCP_WRITE_HINTS):
+        score -= 3
+    required = (tool.get("input_schema") or {}).get("required") or []
+    score -= len(required)  # fewer required args ⇒ easier/safer to sample live
+    return score
+
+
+def pick_mcp_candidates(tools: list[dict[str, Any]], limit: int = 15) -> list[dict[str, Any]]:
+    """Heuristic pre-filter before spending LLM budget and live calls: favours
+    read-like tool names, penalises write-like ones and tools needing several
+    required arguments we can't safely default."""
+    scored = sorted(tools, key=_mcp_tool_score, reverse=True)
+    return [t for t in scored if _mcp_tool_score(t) > -3][:limit]
+
+
+def sample_mcp_tool(url: str, token: str | None, tool: dict[str, Any]) -> Any | None:
+    """Best-effort live call with no or safely-defaulted arguments. Returns
+    None (never raises) when the tool needs a required argument with no
+    obvious default — that tool is still mapped from its schema alone."""
+    from . import mcp_client
+    schema = tool.get("input_schema") or {}
+    required = schema.get("required") or []
+    props = schema.get("properties") or {}
+    args: dict[str, Any] = {}
+    for r in required:
+        spec = props.get(r) or {}
+        if "default" in spec:
+            args[r] = spec["default"]
+        elif spec.get("type") in ("integer", "number"):
+            args[r] = 10
+        elif spec.get("type") == "boolean":
+            args[r] = False
+        else:
+            return None
+    try:
+        return mcp_client.call_tool_sync(url, token, tool["name"], args)
+    except Exception:
+        return None
+
+
+_MCP_MAPPING_SYSTEM = (
+    "You are a data integration engineer connecting a data catalog to another "
+    "application over MCP (Model Context Protocol). You are given a list of "
+    "read-only MCP tools, each with its name, description, input schema, and — "
+    "when available — a live JSON sample of its response. Decide which tools "
+    "expose an enumerable collection of similar records (i.e. could be modelled "
+    "as a database table), and for each propose a table.\n\n"
+    "Field-by-field rules:\n"
+    "- table_name: a short UPPER_SNAKE_CASE table name, e.g. USERS, ORDERS. "
+    "This is the only field you invent a naming convention for.\n"
+    "- schema: a short logical namespace/grouping for the table (e.g. 'APP', "
+    "or the tool's domain area) — NEVER a description of the table's fields "
+    "or anything containing a colon; if unsure, just use the application name.\n"
+    "- row_path: the dot-separated JSON path to the list of records inside "
+    "the tool's response (e.g. 'data.items'); empty string if the response "
+    "itself IS the list, or IS the single record.\n"
+    "- columns[].name: copy this EXACTLY as it appears as a JSON key in the "
+    "sample — same case, same spelling, character for character. Never "
+    "reformat, rename, or re-case a field name.\n"
+    "- columns[].data_type: a short SQL-ish guess (INTEGER, VARCHAR, BOOLEAN, "
+    "TIMESTAMP, JSON…) from the sample value's type.\n\n"
+    "Skip tools that only perform an action, return free text, or return "
+    "nothing tabular. Maximize coverage — include every genuinely tabular "
+    "tool and every field actually present in the evidence — but never "
+    "invent a field or table that isn't grounded in the tool's sample or "
+    "input/output schema.\n"
+    "Reply STRICTLY in JSON: {\"tables\": [{\"tool\": string, \"table_name\": "
+    "string, \"schema\": string, \"comment\": string, \"row_path\": string, "
+    "\"columns\": [{\"name\": string, \"data_type\": string, \"nullable\": bool, "
+    "\"comment\": string}]}]}."
+)
+
+
+def map_mcp_tools(url: str, token: str | None, tools: list[dict[str, Any]],
+                  model: str | None = None) -> dict[str, Any]:
+    if not llm.is_up():
+        raise LLMUnavailable()
+    from . import mcp_client
+    candidates = pick_mcp_candidates(tools)
+    samples: dict[str, Any] = {}
+    blocks = []
+    for t in candidates:
+        sample = sample_mcp_tool(url, token, t)
+        samples[t["name"]] = sample
+        block = f"Tool: {t['name']}\nDescription: {t['description'] or '(none)'}\n"
+        block += f"Input schema: {json.dumps(t['input_schema'])[:400]}\n"
+        if sample is not None:
+            block += f"Sample response: {json.dumps(sample, default=str)[:1500]}\n"
+        else:
+            block += "Sample response: (not called this pass — needs an argument with no safe default)\n"
+        blocks.append(block)
+    prompt = "\n---\n".join(blocks) or "(no candidate tools found)"
+    out = llm.generate(system=_MCP_MAPPING_SYSTEM, prompt=prompt, model=model, timeout=180.0)
+    if not isinstance(out, dict) or "_raw" in out:
+        raise LLMUnavailable()
+    out.setdefault("tables", [])
+    # attach a best-effort row estimate from the sample already fetched above —
+    # no extra live call — so the mapping preview isn't stuck at "~0 rows".
+    for table in out["tables"]:
+        sample = samples.get(table.get("tool"))
+        if sample is None:
+            continue
+        total = mcp_client.extract_total(sample)
+        if total is None:
+            total = len(mcp_client.extract_records(sample, table.get("row_path")))
+        table["row_estimate"] = total
     return out

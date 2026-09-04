@@ -38,6 +38,7 @@ export interface Dataset {
   row_estimate: number;
   comment: string | null;
   columns: Column[];
+  profiled_at?: number;
 }
 
 export interface CachedColumnSuggestion {
@@ -132,6 +133,41 @@ export interface DatasetDoc {
   last_viewed_at?: number;
   custom_properties?: Record<string, string>;
   profile_history?: { row_estimate: number; ts: number }[];
+  datamart?: DatamartInfo;
+}
+
+// -- Datamarts: calculated/derived tables that feed reports & dashboards -- //
+export interface DatamartTableRef {
+  name: string;
+  role: "source" | "target";
+}
+
+export interface DatamartColumnInfo {
+  name: string;
+  description: string;
+  source_expression?: string;
+}
+
+export interface DatamartLinkCandidate {
+  dataset_id: string;
+  label: string;
+  matched_table: string;
+  score: number;
+}
+
+export interface DatamartExtraction {
+  functional_description: string;
+  tables_referenced: DatamartTableRef[];
+  columns: DatamartColumnInfo[];
+  link_candidates: DatamartLinkCandidate[];
+}
+
+export interface DatamartInfo {
+  sql: string;
+  language: "sql" | "code";
+  extraction: DatamartExtraction | null;
+  analyzed_at?: number;
+  registry_dataset_id?: string;
 }
 
 export interface DiscoveredTable {
@@ -144,7 +180,7 @@ export interface DiscoveredTable {
 export interface Connection {
   id: string;
   name: string;
-  type: "demo" | "oracle" | "clickhouse" | "okf";
+  type: "demo" | "oracle" | "clickhouse" | "okf" | "mcp";
   config: Record<string, unknown>;
   llm_model?: string | null;
   created_at: number;
@@ -154,6 +190,86 @@ export interface Connection {
   scope_row_limits?: Record<string, number>;
   scope_row_counts?: Record<string, number>;
   scope_row_counts_at?: Record<string, number>;
+  // MCP Library — full raw tool inventory + pasted code/SQL query definitions
+  mcp_tools?: McpTool[];
+  mcp_tools_at?: number;
+  mcp_queries?: McpQueryDef[];
+}
+
+export interface McpTool {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+}
+
+export interface McpMappingColumn {
+  name: string;
+  data_type: string;
+  nullable: boolean;
+  comment?: string;
+}
+
+export interface McpMappingTable {
+  tool: string;
+  table_name: string;
+  schema?: string;
+  comment?: string;
+  row_path?: string;
+  row_estimate?: number;
+  columns: McpMappingColumn[];
+}
+
+// -- MCP Library: code/SQL-grounded query documentation -- //
+export interface McpQueryTableRef {
+  name: string;
+  role: "source" | "target";
+}
+
+export interface McpQueryColumnInfo {
+  name: string;
+  description: string;
+  source_expression?: string;
+}
+
+export interface McpQueryReconciliation {
+  column: string;
+  status: string; // "matches" | "only_in_code" | "only_in_mapping"
+  note: string;
+}
+
+export interface McpLinkCandidate {
+  dataset_id: string;
+  label: string;
+  matched_table: string;
+  score: number;
+}
+
+export interface McpQueryExtraction {
+  functional_description: string;
+  tables_referenced: McpQueryTableRef[];
+  columns: McpQueryColumnInfo[];
+  column_reconciliation: McpQueryReconciliation[];
+  link_candidates: McpLinkCandidate[];
+}
+
+export interface McpQueryDef {
+  id: string;
+  tool: string;
+  title: string;
+  language: "sql" | "code";
+  code: string;
+  extraction: McpQueryExtraction | null;
+  created_at: number;
+  extracted_at?: number;
+}
+
+export interface McpCoverageGap {
+  tool: string;
+  description: string;
+  has_mapping: boolean;
+  has_query: boolean;
+  priority: number;
+  reason: string;
 }
 
 export interface MatchPair {
@@ -184,7 +300,7 @@ export interface LineageEdge {
   from: string;
   to: string;
   via: string;
-  kind: "key" | "mapping" | "manual";
+  kind: "key" | "mapping" | "manual" | "datamart";
   confidence: number;
 }
 
@@ -192,6 +308,84 @@ export interface QaIssue {
   severity: "high" | "medium" | "low";
   dataset_id: string;
   message: string;
+}
+
+// -- Data Quality Checks (independent deep-profiling module) -- //
+export interface QualityThresholds {
+  zscore: number;
+  iqr_multiplier: number;
+  outlier_pct_high: number;
+  duplicate_pct_high: number;
+  categorical_cardinality_max: number;
+  pattern_dominance_min: number;
+  value_sample_size: number;
+  row_sample_size: number;
+}
+
+export interface QualityPlanStep {
+  table: string;
+  columns: string[];
+  checks: string[];
+  reason: string;
+}
+
+export interface QualityPlan {
+  steps: QualityPlanStep[];
+  narrative: string;
+}
+
+export interface QualityFinding {
+  table: string;
+  column: string | null;
+  kind: string;
+  severity: "high" | "medium" | "low";
+  message: string;
+  evidence: Record<string, unknown>;
+}
+
+export interface QualityHighlight {
+  finding_index: number;
+  explanation: string;
+  suggested_action: string;
+}
+
+export interface QualityTableResult {
+  dataset_id: string;
+  name: string;
+  row_estimate: number;
+  findings: QualityFinding[];
+  interpretation: {
+    summary: string;
+    risk_level: "low" | "medium" | "high";
+    highlights: QualityHighlight[];
+  };
+}
+
+export interface QualityRunLog {
+  ts: number;
+  level: string;
+  message: string;
+}
+
+export interface QualityRun {
+  id: string;
+  connection_id: string;
+  scope: Record<string, string[] | null>;
+  thresholds: QualityThresholds;
+  focus_notes: string;
+  status: "queued" | "running" | "waiting_input" | "done" | "error" | "cancelled";
+  progress: number;
+  phase: "planning" | "checking" | "refining" | "interpreting" | "done" | null;
+  logs: QualityRunLog[];
+  created_at: number;
+  started_at?: number;
+  finished_at?: number;
+  plan: QualityPlan | null;
+  tables: QualityTableResult[];
+  cancel_requested: boolean;
+  pending_question?: string | null;
+  question_answer?: string | null;
+  error?: string;
 }
 
 export interface GlossaryTerm {
@@ -230,6 +424,15 @@ export interface ConnectorSettings {
   row_fetch_limit: number;
 }
 
+export interface AlertSettings {
+  quality_score_warn: number;
+  quality_score_critical: number;
+  null_ratio_warn: number;
+  row_drift_warn_pct: number;
+  require_pii_validation: boolean;
+  stale_days_warn: number;
+}
+
 export interface McpConfig {
   enabled: boolean;
   api_token_prefix?: string | null;
@@ -255,7 +458,7 @@ export interface CatalogState {
   model_notes: ModelNote[];
   runs: AgentRun[];
   audit: { version: number; ts: number; action: string; detail: string }[];
-  settings: { theme: string; llm: LlmConfig; connectors: ConnectorSettings; mcp: McpConfig };
+  settings: { theme: string; llm: LlmConfig; connectors: ConnectorSettings; alerts: AlertSettings; mcp: McpConfig };
   domains: Domain[];
   column_lineage: ColumnLineageEdge[];
 }
@@ -272,12 +475,26 @@ export interface SearchHit {
   domain_id?: string;
 }
 
+export type Role = "admin" | "member" | "viewer";
+
 export interface User {
   id: string;
   username: string;
-  role: "admin" | "member";
+  role: Role;
   active: boolean;
   created_at: number;
+}
+
+export interface Notification {
+  id: string;
+  audience: "all" | "admins" | "user";
+  title: string;
+  message: string;
+  kind: "info" | "success" | "warning" | "error";
+  category: string;
+  link: { tab?: string } | null;
+  created_at: number;
+  read: boolean;
 }
 
 export interface QueryLogEntry {

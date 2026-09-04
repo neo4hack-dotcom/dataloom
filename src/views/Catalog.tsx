@@ -5,6 +5,7 @@ import {
   IdCard, Wand2, Loader2, FileInput, Workflow, Layers, Split, RefreshCw,
   LayoutDashboard, Columns3, GitCompare, ShieldAlert, Settings2, BookOpen,
   Tag as TagIcon, UserPlus, AlertTriangle, EyeOff, Eye, ArrowRight, Users,
+  FileDown, Database, ChevronDown, ChevronRight, Boxes, ListTree, Link2,
 } from "lucide-react";
 import { useCatalog, useScopedDatasets } from "../store";
 import { api, type ColumnSuggestion, type TableSuggestion } from "../api";
@@ -14,6 +15,7 @@ import {
 } from "../lib/ui";
 import { computeDatasetHealth } from "../lib/health";
 import { useConfirm } from "../components/ConfirmDialog";
+import { renderHtmlToPDF, escHtml, reportHeader, reportFooter, REPORT_FONT } from "../lib/pdfExport";
 import type { CachedColumnSuggestion, Column, Dataset } from "../types";
 import type { Tab } from "../App";
 
@@ -25,10 +27,13 @@ function isProtectedDoc(doc: any): boolean {
 
 export function Catalog({ goto }: { goto?: (t: Tab) => void }) {
   const datasets = useScopedDatasets();
-  const { focusDataset, setFocusDataset } = useCatalog();
+  const { state, focusDataset, setFocusDataset } = useCatalog();
   const [q, setQ] = useState("");
   const [selDs, setSelDs] = useState<string | null>(null);
   const [selCol, setSelCol] = useState<Column | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [registryOpen, setRegistryOpen] = useState(false);
+  const [datamartOnly, setDatamartOnly] = useState(false);
 
   // Search / Command Palette / Impact Analysis can drill straight into a table (+column)
   useEffect(() => {
@@ -41,12 +46,18 @@ export function Catalog({ goto }: { goto?: (t: Tab) => void }) {
   }, [focusDataset]); // eslint-disable-line
 
   const filtered = useMemo(() => {
-    if (!q.trim()) return datasets;
-    const ql = q.toLowerCase();
-    return datasets.filter((d) =>
-      `${d.schema}.${d.name}`.toLowerCase().includes(ql) ||
-      d.columns.some((c) => c.name.toLowerCase().includes(ql)));
-  }, [datasets, q]);
+    let out = datasets;
+    if (datamartOnly) out = out.filter((d) => (state?.docs[d.id]?.tags ?? []).includes("datamart"));
+    if (q.trim()) {
+      const ql = q.toLowerCase();
+      out = out.filter((d) =>
+        `${d.schema}.${d.name}`.toLowerCase().includes(ql) ||
+        d.columns.some((c) => c.name.toLowerCase().includes(ql)));
+    }
+    return out;
+  }, [datasets, q, datamartOnly, state?.docs]);
+
+  const datamartCount = datasets.filter((d) => (state?.docs[d.id]?.tags ?? []).includes("datamart")).length;
 
   const active = datasets.find((d) => d.id === selDs) ?? filtered[0] ?? null;
 
@@ -62,11 +73,25 @@ export function Catalog({ goto }: { goto?: (t: Tab) => void }) {
       {/* table list */}
       <div className="card flex flex-col overflow-hidden">
         <div className="border-b border-slate-200 p-2.5 dark:border-slate-800">
-          <div className="relative">
-            <Search size={14} className="absolute left-2.5 top-2.5 text-slate-400" />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter…"
-              className="input !py-1.5 !pl-8 text-xs" />
+          <div className="flex items-center gap-1.5">
+            <div className="relative flex-1">
+              <Search size={14} className="absolute left-2.5 top-2.5 text-slate-400" />
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter…"
+                className="input !py-1.5 !pl-8 text-xs" />
+            </div>
+            <button onClick={() => setRegistryOpen(true)} className="btn-outline shrink-0 !p-1.5" title="Import datamarts from a registry table">
+              <ListTree size={15} />
+            </button>
+            <button onClick={() => setExportOpen(true)} className="btn-outline shrink-0 !p-1.5" title="Export catalog to PDF">
+              <FileDown size={15} />
+            </button>
           </div>
+          {datamartCount > 0 && (
+            <label className="mt-2 flex items-center gap-1.5 text-xs text-slate-500">
+              <input type="checkbox" checked={datamartOnly} onChange={(e) => setDatamartOnly(e.target.checked)} />
+              <Boxes size={12} className="text-violet-500" /> Datamarts only ({datamartCount})
+            </label>
+          )}
         </div>
         <div className="flex-1 overflow-auto p-1.5">
           {filtered.map((d) => {
@@ -88,6 +113,315 @@ export function Catalog({ goto }: { goto?: (t: Tab) => void }) {
           <ColumnPanel ds={active} col={selCol} onClose={() => setSelCol(null)} />
         </div>
       ) : null}
+      {exportOpen && <CatalogExportModal onClose={() => setExportOpen(false)} />}
+      {registryOpen && <DatamartRegistryModal onClose={() => setRegistryOpen(false)} />}
+    </div>
+  );
+}
+
+// ---- Catalog PDF export: pick connections/tables, render a branded report -- //
+function CatalogExportModal({ onClose }: { onClose: () => void }) {
+  const { state, toast } = useCatalog();
+  const conns = state?.connections ?? [];
+  const allDatasets = state?.datasets ?? [];
+  const [expanded, setExpanded] = useState<Set<string>>(new Set(conns.map((c) => c.id)));
+  const [selected, setSelected] = useState<Set<string>>(new Set(allDatasets.map((d) => d.id)));
+  const [exporting, setExporting] = useState(false);
+
+  const datasetsOf = (cid: string) => allDatasets.filter((d) => d.connection_id === cid);
+
+  const toggleExpand = (cid: string) => setExpanded((s) => {
+    const n = new Set(s); if (n.has(cid)) n.delete(cid); else n.add(cid); return n;
+  });
+  const toggleDataset = (id: string) => setSelected((s) => {
+    const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n;
+  });
+  const toggleConn = (cid: string) => {
+    const ids = datasetsOf(cid).map((d) => d.id);
+    const allOn = ids.every((id) => selected.has(id));
+    setSelected((s) => {
+      const n = new Set(s);
+      ids.forEach((id) => allOn ? n.delete(id) : n.add(id));
+      return n;
+    });
+  };
+
+  const exportPDF = async () => {
+    const dsList = allDatasets.filter((d) => selected.has(d.id));
+    if (dsList.length === 0) { toast("err", "Select at least one table"); return; }
+    setExporting(true);
+    try {
+      const dateStr = new Date().toISOString().slice(0, 10);
+      await renderHtmlToPDF(buildCatalogReportHTML(dsList, state!.docs, conns), `catalog-export-${dateStr}.pdf`);
+      toast("ok", "Catalog PDF exported ✓");
+      onClose();
+    } catch (e) {
+      toast("err", `PDF export failed: ${(e as Error).message}`);
+    } finally { setExporting(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div className="flex max-h-[85vh] w-full max-w-lg flex-col rounded-xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="mb-1 flex items-center gap-2">
+          <FileDown size={18} className="text-loom-500" />
+          <h3 className="font-semibold">Export catalog to PDF</h3>
+          <button onClick={onClose} className="btn-ghost ml-auto !p-1"><X size={16} /></button>
+        </div>
+        <p className="mb-3 text-xs text-slate-400">
+          Pick one or more sources, and which of their tables to include — a professionally formatted report
+          matching the app's branding, ready to share.
+        </p>
+        <div className="min-h-0 flex-1 space-y-1.5 overflow-auto rounded-lg border border-slate-200 p-1.5 dark:border-slate-800">
+          {conns.map((c) => {
+            const ds = datasetsOf(c.id);
+            if (ds.length === 0) return null;
+            const allOn = ds.every((d) => selected.has(d.id));
+            const someOn = ds.some((d) => selected.has(d.id));
+            const isOpen = expanded.has(c.id);
+            return (
+              <div key={c.id}>
+                <div className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-slate-100 dark:hover:bg-slate-800">
+                  <input type="checkbox" checked={allOn} ref={(el) => { if (el) el.indeterminate = someOn && !allOn; }}
+                    onChange={() => toggleConn(c.id)} />
+                  <Database size={13} className="shrink-0 text-slate-400" />
+                  <button onClick={() => toggleExpand(c.id)} className="flex min-w-0 flex-1 items-center gap-1 text-left font-medium">
+                    <span className="truncate">{c.name}</span>
+                    <span className="shrink-0 text-xs text-slate-400">({ds.filter((d) => selected.has(d.id)).length}/{ds.length})</span>
+                    {isOpen ? <ChevronDown size={13} className="shrink-0 text-slate-400" /> : <ChevronRight size={13} className="shrink-0 text-slate-400" />}
+                  </button>
+                </div>
+                {isOpen && (
+                  <div className="ml-6 space-y-0.5 border-l border-slate-200 pl-2 dark:border-slate-800">
+                    {ds.map((d) => (
+                      <label key={d.id} className="flex items-center gap-2 rounded-lg px-2 py-1 text-xs hover:bg-slate-100 dark:hover:bg-slate-800">
+                        <input type="checkbox" checked={selected.has(d.id)} onChange={() => toggleDataset(d.id)} />
+                        <Table2 size={11} className="shrink-0 text-slate-400" />
+                        <span className="min-w-0 flex-1 truncate font-mono">{d.schema}.{d.name}</span>
+                        <span className="shrink-0 text-slate-400">{d.columns.length} col</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {conns.every((c) => datasetsOf(c.id).length === 0) && (
+            <div className="py-6 text-center text-xs text-slate-400">No profiled tables yet.</div>
+          )}
+        </div>
+        <div className="mt-3 flex items-center gap-2">
+          <span className="text-xs text-slate-400">{selected.size} table(s) selected</span>
+          <button onClick={exportPDF} disabled={exporting || selected.size === 0} className="btn-ai ml-auto">
+            {exporting ? <Loader2 size={15} className="animate-spin" /> : <FileDown size={15} />} Export PDF
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function buildCatalogReportHTML(datasets: Dataset[], docs: Record<string, any>, connections: { id: string; name: string; type: string }[]): string {
+  const esc = escHtml;
+  const connName = (cid: string) => connections.find((c) => c.id === cid)?.name ?? cid;
+  const totalCols = datasets.reduce((s, d) => s + d.columns.length, 0);
+  const piiCols = datasets.reduce((s, d) => s + d.columns.filter((c) => c.profile.sensitivity === "PII").length, 0);
+  const avgQuality = totalCols === 0 ? 0 : Math.round(
+    datasets.reduce((s, d) => s + d.columns.reduce((s2, c) => s2 + c.profile.quality_score, 0), 0) / totalCols);
+
+  const byConn = new Map<string, Dataset[]>();
+  for (const d of datasets) {
+    if (!byConn.has(d.connection_id)) byConn.set(d.connection_id, []);
+    byConn.get(d.connection_id)!.push(d);
+  }
+
+  const tableSections = [...byConn.entries()].map(([cid, ds]) => {
+    const tables = ds.map((d) => {
+      const doc = docs[d.id] || {};
+      const cols = d.columns.map((c) => {
+        const cdoc = (doc.columns || {})[c.name] || {};
+        const qColor = c.profile.quality_score >= 80 ? "#009f3d" : c.profile.quality_score >= 50 ? "#f59e0b" : "#e11d48";
+        return `<tr>
+          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;font-family:ui-monospace,monospace;font-size:11.5px;">
+            ${esc(c.name)}${c.profile.sensitivity === "PII" ? ` <span style="color:#e11d48;font-size:10px;">🔒</span>` : ""}
+          </td>
+          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;font-size:11px;color:#64748b;">${esc(c.data_type)}</td>
+          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;font-size:11px;color:#64748b;">${esc(c.profile.semantic_type)}</td>
+          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;font-size:11px;color:#334155;">${esc(cdoc.definition || "—")}</td>
+          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right;font-size:11px;font-weight:700;color:${qColor};">${Math.round(c.profile.quality_score)}</td>
+        </tr>`;
+      }).join("");
+      const tags: string[] = doc.tags || [];
+      const owners: { name: string }[] = doc.owners || [];
+      return `
+      <div style="margin-top:16px;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;page-break-inside:avoid;">
+        <div style="padding:12px 14px;background:#f8fafc;border-left:5px solid #009f3d;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-family:ui-monospace,monospace;font-weight:700;font-size:13px;color:#0f172a;">${esc(d.schema)}.${esc(d.name)}</span>
+            ${doc.domain ? `<span style="font-size:10px;font-weight:700;color:#009f3d;background:#f0f9f3;border-radius:999px;padding:2px 8px;">${esc(doc.domain)}</span>` : ""}
+            <span style="margin-left:auto;font-size:11px;color:#94a3b8;">~${d.row_estimate.toLocaleString()} rows · ${d.columns.length} column(s)</span>
+          </div>
+          ${doc.definition ? `<p style="margin:6px 0 0;font-size:12px;color:#475569;line-height:1.5;">${esc(doc.definition)}</p>` : ""}
+          ${doc.synthesis ? `<p style="margin:6px 0 0;font-size:11.5px;color:#166534;background:#f0fdf4;border-radius:6px;padding:6px 8px;line-height:1.5;">${esc(doc.synthesis)}</p>` : ""}
+          ${(tags.length || owners.length) ? `<div style="margin-top:6px;font-size:10.5px;color:#64748b;">
+            ${tags.length ? `Tags: ${tags.map(esc).join(", ")}` : ""}${tags.length && owners.length ? " · " : ""}
+            ${owners.length ? `Owners: ${owners.map((o) => esc(o.name)).join(", ")}` : ""}
+          </div>` : ""}
+        </div>
+        <table style="width:100%;border-collapse:collapse;">
+          <thead><tr style="background:#fff;">
+            <th style="text-align:left;padding:5px 10px;font-size:9.5px;color:#94a3b8;text-transform:uppercase;">Column</th>
+            <th style="text-align:left;padding:5px 10px;font-size:9.5px;color:#94a3b8;text-transform:uppercase;">Type</th>
+            <th style="text-align:left;padding:5px 10px;font-size:9.5px;color:#94a3b8;text-transform:uppercase;">Semantic</th>
+            <th style="text-align:left;padding:5px 10px;font-size:9.5px;color:#94a3b8;text-transform:uppercase;">Definition</th>
+            <th style="text-align:right;padding:5px 10px;font-size:9.5px;color:#94a3b8;text-transform:uppercase;">Quality</th>
+          </tr></thead>
+          <tbody>${cols}</tbody>
+        </table>
+      </div>`;
+    }).join("");
+    return `
+      <div style="margin-top:24px;">
+        <div style="font-size:13px;font-weight:800;color:#0f172a;display:flex;align-items:center;gap:6px;">
+          <span style="width:8px;height:8px;border-radius:50%;background:#009f3d;display:inline-block;"></span>
+          ${esc(connName(cid))}
+        </div>
+        ${tables}
+      </div>`;
+  }).join("");
+
+  return `
+    <div style="${REPORT_FONT}padding:36px 40px;color:#0f172a;">
+      ${reportHeader("Catalog Export", [`${byConn.size} source(s)`, new Date().toLocaleString()])}
+
+      <div style="display:flex;gap:14px;margin-top:20px;">
+        <div style="flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:14px;">
+          <div style="font-size:22px;font-weight:800;">${datasets.length}</div>
+          <div style="font-size:11px;color:#94a3b8;">table(s) exported</div>
+        </div>
+        <div style="flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:14px;">
+          <div style="font-size:22px;font-weight:800;">${totalCols}</div>
+          <div style="font-size:11px;color:#94a3b8;">column(s)</div>
+        </div>
+        <div style="flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:14px;">
+          <div style="font-size:22px;font-weight:800;color:${piiCols > 0 ? "#e11d48" : "#0f172a"};">${piiCols}</div>
+          <div style="font-size:11px;color:#94a3b8;">PII field(s)</div>
+        </div>
+        <div style="flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:14px;">
+          <div style="font-size:22px;font-weight:800;color:${avgQuality >= 80 ? "#009f3d" : avgQuality >= 50 ? "#f59e0b" : "#e11d48"};">${avgQuality}</div>
+          <div style="font-size:11px;color:#94a3b8;">avg. quality score</div>
+        </div>
+      </div>
+
+      ${tableSections}
+
+      ${reportFooter("Generated by DOINg.Catalogue. Column definitions marked — are undocumented; " +
+        "🔒 marks a column detected as personally identifiable information (PII).")}
+    </div>`;
+}
+
+// ---- Datamart registry: pick a table that lists many datamarts (name + SQL per
+// row) and bulk-import them — detect role columns, review, then scan & apply --- //
+const DATAMART_ROLES = [
+  ["name_col", "Datamart name"], ["sql_col", "Generation SQL"],
+  ["description_col", "Description (optional)"], ["schema_col", "Schema (optional)"],
+] as const;
+
+function DatamartRegistryModal({ onClose }: { onClose: () => void }) {
+  const { state, mutate, toast } = useCatalog();
+  const datasets = state?.datasets ?? [];
+  const [dsId, setDsId] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [cols, setCols] = useState<string[]>([]);
+  const [roles, setRoles] = useState<Record<string, string | null>>({});
+  const [confidence, setConfidence] = useState<number | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [result, setResult] = useState<{ processed: number; created: number; matched_existing: number; edges_added: number; failed: number } | null>(null);
+
+  const detect = async (id: string) => {
+    setDsId(id); setResult(null); setRoles({}); setConfidence(null);
+    if (!id) return;
+    setLoading(true);
+    try {
+      const r = await api.detectDatamartRegistry(id);
+      setCols(r.columns); setRoles(r.roles); setConfidence(r.confidence);
+    } catch (e) {
+      toast("err", (e as Error).message.includes("503") ? "Local LLM unavailable" : "Detection failed");
+    } finally { setLoading(false); }
+  };
+
+  const runImport = async () => {
+    if (!roles.name_col || !roles.sql_col) { toast("err", "Datamart name and SQL columns are required"); return; }
+    setImporting(true);
+    try {
+      const r = await mutate((v) => api.importDatamartRegistry(dsId, roles, 50, v));
+      if (r) { setResult(r); toast("ok", `${r.processed} datamart(s) processed ✓`); }
+    } finally { setImporting(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div className="w-full max-w-lg rounded-xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="mb-1 flex items-center gap-2">
+          <Boxes size={18} className="text-violet-500" />
+          <h3 className="font-semibold">Import datamarts from a registry table</h3>
+          <button onClick={onClose} className="btn-ghost ml-auto !p-1"><X size={16} /></button>
+        </div>
+        <p className="mb-3 text-xs text-slate-400">
+          Pick a table that already lists your datamarts — one row per datamart, with its name and
+          generation SQL. The LLM finds the right columns, then every row is scanned: matched to an
+          existing table by name (or added as a new placeholder), tagged, analyzed, and linked to its raw
+          source tables where the match is confident.
+        </p>
+        <label className="mb-3 block space-y-1">
+          <span className="text-xs font-medium text-slate-500">Registry table</span>
+          <select className="input text-sm" value={dsId} onChange={(e) => detect(e.target.value)}>
+            <option value="">— choose a table —</option>
+            {datasets.map((d) => <option key={d.id} value={d.id}>{d.schema}.{d.name}</option>)}
+          </select>
+        </label>
+
+        {loading ? (
+          <div className="flex items-center gap-2 py-6 text-sm text-slate-400">
+            <Loader2 size={15} className="animate-spin" /> Detecting name/SQL columns…
+          </div>
+        ) : dsId && cols.length > 0 ? (
+          <>
+            <p className="mb-2 text-xs text-slate-400">
+              {confidence !== null && `${confidence}% confident. `}Adjust if needed, then scan.
+            </p>
+            <div className="space-y-2">
+              {DATAMART_ROLES.map(([role, label]) => (
+                <div key={role} className="flex items-center gap-2 text-sm">
+                  <span className="w-40 shrink-0 text-xs text-slate-500">{label}</span>
+                  <select className="input !py-1.5 text-xs" value={roles[role] ?? ""}
+                    onChange={(e) => setRoles((r) => ({ ...r, [role]: e.target.value || null }))}>
+                    <option value="">— none —</option>
+                    {cols.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+              ))}
+            </div>
+            <div className="mt-4 flex gap-2">
+              <button onClick={runImport} disabled={importing} className="btn-ai flex-1 justify-center">
+                {importing ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />} Scan &amp; import
+              </button>
+              <button onClick={onClose} className="btn-outline">Close</button>
+            </div>
+          </>
+        ) : null}
+
+        {result && (
+          <div className="mt-4 space-y-1 rounded-lg border border-violet-200 bg-violet-50/40 p-3 text-xs dark:border-violet-900/40 dark:bg-violet-950/20">
+            <div><b>{result.processed}</b> row(s) processed</div>
+            <div><b>{result.matched_existing}</b> matched an existing table · <b>{result.created}</b> created as new</div>
+            <div><b>{result.edges_added}</b> lineage link(s) auto-added</div>
+            {result.failed > 0 && <div className="text-amber-600 dark:text-amber-400">{result.failed} row(s) failed (LLM unavailable) — re-run later.</div>}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -98,6 +432,7 @@ function TableRow({ d, isActive, pii, onSelect }: {
 }) {
   const { state, mutate, toast } = useCatalog();
   const deprecated = !!state?.docs[d.id]?.deprecated;
+  const isDatamart = (state?.docs[d.id]?.tags ?? []).includes("datamart");
   const del = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!confirm(`Delete table "${d.name}" from the catalog? This cannot be undone.`)) return;
@@ -115,6 +450,7 @@ function TableRow({ d, isActive, pii, onSelect }: {
           <div className="truncate text-[10px] text-slate-400">{d.schema} · {d.columns.length} col</div>
         </div>
       </button>
+      {isDatamart && <span title="Datamart"><Boxes size={12} className="shrink-0 text-violet-500" /></span>}
       {deprecated && <AlertTriangle size={12} className="shrink-0 text-rose-500" />}
       {pii > 0 && <Lock size={12} className="shrink-0 text-rose-400" />}
       <button onClick={del}
@@ -183,14 +519,13 @@ function AddTableHint() {
 }
 
 // ---- Table detail --------------------------------------------------------- //
-type EntityTab = "overview" | "schema" | "lineage" | "quality" | "properties" | "docs";
+type EntityTab = "identity" | "schema" | "lineage" | "quality" | "properties";
 const ENTITY_TABS: { id: EntityTab; label: string; icon: typeof LayoutDashboard }[] = [
-  { id: "overview", label: "Overview", icon: LayoutDashboard },
+  { id: "identity", label: "Identity Card", icon: IdCard },
   { id: "schema", label: "Schema", icon: Columns3 },
   { id: "lineage", label: "Lineage", icon: GitCompare },
   { id: "quality", label: "Quality", icon: ShieldAlert },
   { id: "properties", label: "Properties", icon: Settings2 },
-  { id: "docs", label: "Documentation", icon: BookOpen },
 ];
 
 function TableDetail({ ds, onSelectCol, selCol, goto }: {
@@ -199,7 +534,7 @@ function TableDetail({ ds, onSelectCol, selCol, goto }: {
   const { state, health, mutate, setFocusDataset, toast } = useCatalog();
   const doc = state?.docs[ds.id];
   const llmUp = health?.llm.up ?? false;
-  const [tab, setTab] = useState<EntityTab>("overview");
+  const [tab, setTab] = useState<EntityTab>("identity");
   const [editingMeta, setEditingMeta] = useState(false);
   const [metaDef, setMetaDef] = useState(doc?.definition ?? "");
   const [metaDomain, setMetaDomain] = useState(doc?.domain ?? "");
@@ -211,7 +546,7 @@ function TableDetail({ ds, onSelectCol, selCol, goto }: {
   const [depReplacement, setDepReplacement] = useState("");
 
   useEffect(() => {
-    setTab("overview"); setDeprecating(false);
+    setTab("identity"); setDeprecating(false);
     api.recordDatasetView(ds.id).catch(() => {});
   }, [ds.id]);
 
@@ -226,7 +561,7 @@ function TableDetail({ ds, onSelectCol, selCol, goto }: {
     return { validated, suggested, undocumented };
   }, [ds.columns, doc?.columns]);
 
-  const health_ = useMemo(() => computeDatasetHealth(ds, doc), [ds, doc]);
+  const health_ = useMemo(() => computeDatasetHealth(ds, doc, state?.settings.alerts), [ds, doc, state?.settings.alerts]);
 
   const saveMeta = async () => {
     await mutate((v) => api.updateDatasetMeta(ds.id, { definition: metaDef, domain: metaDomain }, v));
@@ -288,6 +623,9 @@ function TableDetail({ ds, onSelectCol, selCol, goto }: {
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <h3 className="truncate text-lg font-bold">{ds.schema}.{ds.name}</h3>
+                {(doc?.tags ?? []).includes("datamart") && (
+                  <span className="chip bg-violet-500/10 text-violet-500"><Boxes size={10} /> datamart</span>
+                )}
                 {doc?.domain && <span className="chip bg-loom-500/10 text-loom-500">{doc.domain}</span>}
                 {doc?.deprecated && <span className="chip bg-rose-500/10 text-rose-500"><AlertTriangle size={10} /> deprecated</span>}
                 {(doc?.view_count ?? 0) > 0 && (
@@ -369,7 +707,28 @@ function TableDetail({ ds, onSelectCol, selCol, goto }: {
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
-        {tab === "overview" && <OverviewTabContent ds={ds} doc={doc} health={health_} />}
+        {tab === "identity" && (
+          <div>
+            <OverviewTabContent ds={ds} doc={doc} health={health_} />
+            <div className="border-t border-slate-200 px-4 py-3 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  <BookOpen size={12} /> Column documentation
+                </span>
+                {doc?.llm_table_suggestion && (
+                  <span className="chip bg-flame-500/10 text-flame-500 normal-case">AI suggestion stored</span>
+                )}
+                <button onClick={() => setAutoDocOpen(true)} disabled={!llmUp}
+                  className={`ml-auto !py-1 text-xs ${doc?.llm_table_suggestion ? "btn-danger" : "btn-ai"}`}
+                  title="Auto-document every column at once">
+                  <Wand2 size={12} /> {doc?.llm_table_suggestion ? "Review suggestion" : "Auto-document table"}
+                </button>
+              </div>
+            </div>
+            <TableIdentity ds={ds} />
+            <DatamartPanel ds={ds} />
+          </div>
+        )}
         {tab === "schema" && (
           <SchemaTabContent ds={ds} doc={doc} selCol={selCol} onSelectCol={onSelectCol} delCol={delCol}
             addingCol={addingCol} setAddingCol={setAddingCol} newCol={newCol} setNewCol={setNewCol} addCol={addCol} />
@@ -377,17 +736,6 @@ function TableDetail({ ds, onSelectCol, selCol, goto }: {
         {tab === "lineage" && <LineageTabContent ds={ds} goto={goto} onSelectCol={onSelectCol} />}
         {tab === "quality" && <QualityTabContent health={health_} />}
         {tab === "properties" && <PropertiesTabContent ds={ds} doc={doc} />}
-        {tab === "docs" && (
-          <div>
-            <div className="flex justify-end p-3 pb-0">
-              <button onClick={() => setAutoDocOpen(true)} disabled={!llmUp}
-                className="btn-outline !py-1 text-xs" title="Auto-document every column at once">
-                <Wand2 size={13} /> Auto-document table
-              </button>
-            </div>
-            <TableIdentity ds={ds} />
-          </div>
-        )}
       </div>
       {autoDocOpen && <AutoDocModal ds={ds} doc={doc} onClose={() => setAutoDocOpen(false)} />}
     </div>
@@ -790,7 +1138,7 @@ function AutoDocModal({ ds, doc, onClose }: { ds: Dataset; doc: any; onClose: ()
           <h3 className="font-semibold">Auto-document — {ds.name}</h3>
           <span className="chip bg-loom-500/10 text-loom-500">{sugg.domain}</span>
           {cachedAt && <span className="chip bg-slate-500/10 text-slate-400">cached {timeAgo(cachedAt)} ago</span>}
-          <button onClick={() => load(true)} disabled={regenerating} className="btn-ghost ml-auto !p-1 text-slate-400" title="Regenerate">
+          <button onClick={() => load(true)} disabled={regenerating} className="btn-ghost ml-auto !p-1 text-loom-500" title="Regenerate">
             {regenerating ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
           </button>
           <button onClick={onClose} className="btn-ghost !p-1"><X size={16} /></button>
@@ -828,7 +1176,9 @@ function AutoDocModal({ ds, doc, onClose }: { ds: Dataset; doc: any; onClose: ()
         )}
 
         <div className="mt-3 flex gap-2">
-          <button onClick={apply} disabled={applying || toApply.length === 0} className="btn-primary flex-1 justify-center text-xs">
+          <button onClick={apply} disabled={applying || toApply.length === 0}
+            className={`flex-1 justify-center text-xs ${
+              toApply.some((c) => !!doc?.columns?.[c.name]?.definition) ? "btn-danger" : "btn-ai"}`}>
             {applying ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
             Apply to {toApply.length} column{toApply.length === 1 ? "" : "s"}
           </button>
@@ -968,8 +1318,11 @@ function ColumnPanel({ ds, col, onClose }: { ds: Dataset; col: Column | null; on
                 </div>
               )}
               <div className="mt-2.5 flex gap-2">
-                <button onClick={acceptSuggestion} className="btn-primary flex-1 justify-center text-xs"><Check size={13} /> Accept</button>
-                <button onClick={() => runSuggest(true)} disabled={!llmUp || aiLoading} className="btn-outline text-xs">
+                <button onClick={acceptSuggestion}
+                  className={`flex-1 justify-center text-xs ${doc?.definition ? "btn-danger" : "btn-ai"}`}>
+                  <Check size={13} /> Accept
+                </button>
+                <button onClick={() => runSuggest(true)} disabled={!llmUp || aiLoading} className="btn-ai-outline text-xs">
                   {aiLoading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Regenerate
                 </button>
                 <button onClick={() => setAiSugg(null)} className="btn-outline text-xs">Discard</button>
@@ -1016,7 +1369,7 @@ function ColumnPanel({ ds, col, onClose }: { ds: Dataset; col: Column | null; on
               <div className="flex items-center gap-2 flex-wrap">
                 <button onClick={startEdit} className="btn-outline text-xs"><Pencil size={12} /> Edit</button>
                 {!aiSugg && (
-                  <button onClick={() => runSuggest()} disabled={!llmUp || aiLoading} className="btn-outline text-xs">
+                  <button onClick={() => runSuggest()} disabled={!llmUp || aiLoading} className="btn-ai-outline text-xs">
                     {aiLoading ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
                     {cachedSuggestion ? "Show AI suggestion" : "AI suggest"}
                   </button>
@@ -1113,8 +1466,9 @@ function Mini({ label, value, sub, accent = "" }: { label: string; value: string
 // ---- Identity card + content synthesis + partitioning + mapping import ----- //
 function TableIdentity({ ds }: { ds: Dataset }) {
   const { state, health, mutate, toast } = useCatalog();
+  const { confirm, dialog } = useConfirm();
   const doc = state?.docs[ds.id];
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const [synthLoading, setSynthLoading] = useState(false);
   const [mapOpen, setMapOpen] = useState(false);
   const llmUp = health?.llm.up ?? false;
@@ -1127,6 +1481,14 @@ function TableIdentity({ ds }: { ds: Dataset }) {
   const identity = doc?.identity;
 
   const generate = async () => {
+    if (synth) {
+      const ok = await confirm({
+        title: "Overwrite the stored synthesis?",
+        message: "This table already has a stored content synthesis. Regenerating will replace it.",
+        tone: "warning", steps: 1, confirmLabel: "Regenerate",
+      });
+      if (!ok) return;
+    }
     setSynthLoading(true);
     try {
       const r = await mutate((v) => api.synthesizeTable(ds.id, v));
@@ -1153,7 +1515,7 @@ function TableIdentity({ ds }: { ds: Dataset }) {
     <div className="border-b border-slate-200 dark:border-slate-800">
       <button onClick={() => setOpen((o) => !o)}
         className="flex w-full items-center gap-2 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/40">
-        <IdCard size={14} className="text-loom-500" /> Identity card & synthesis
+        <IdCard size={14} className="text-loom-500" /> Content synthesis & partitioning
         {synth && <span className="chip bg-emerald-500/10 text-emerald-500 normal-case">stored</span>}
         {isMappingLike && <span className="chip bg-flame-500/10 text-flame-400 normal-case">looks like a mapping table</span>}
         <span className="ml-auto">{open ? "−" : "+"}</span>
@@ -1166,7 +1528,8 @@ function TableIdentity({ ds }: { ds: Dataset }) {
             <div className="mb-1.5 flex items-center gap-2 text-xs font-semibold text-slate-500">
               <Sparkles size={13} className="text-loom-500" /> Content synthesis
               {doc?.synthesis_source && <span className="chip bg-slate-500/10 text-slate-400">{doc.synthesis_source}</span>}
-              <button onClick={generate} disabled={!llmUp || synthLoading} className="btn-outline ml-auto !py-1 text-xs">
+              <button onClick={generate} disabled={!llmUp || synthLoading}
+                className={`ml-auto !py-1 text-xs ${synth ? "btn-danger" : "btn-ai"}`}>
                 {synthLoading ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
                 {synth ? "Regenerate" : "Generate with AI"}
               </button>
@@ -1216,7 +1579,7 @@ function TableIdentity({ ds }: { ds: Dataset }) {
             <div className="flex items-center gap-2">
               <Workflow size={14} className="text-flame-500" />
               <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">ETL mapping import</span>
-              <button onClick={() => setMapOpen(true)} disabled={!llmUp} className="btn-outline ml-auto !py-1 text-xs">
+              <button onClick={() => setMapOpen(true)} disabled={!llmUp} className="btn-ai-outline ml-auto !py-1 text-xs">
                 <FileInput size={12} /> Analyse as mapping table
               </button>
             </div>
@@ -1228,6 +1591,127 @@ function TableIdentity({ ds }: { ds: Dataset }) {
       )}
 
       {mapOpen && <MappingModal ds={ds} doc={doc} onClose={() => setMapOpen(false)} />}
+      {dialog}
+    </div>
+  );
+}
+
+// ---- Datamart: mark a calculated table that feeds a report, paste its SQL,
+// let the LLM describe it and propose lineage links to the raw tables behind it --- //
+function DatamartPanel({ ds }: { ds: Dataset }) {
+  const { state, mutate, toast } = useCatalog();
+  const doc = state?.docs[ds.id];
+  const dm = doc?.datamart;
+  const isDatamart = (doc?.tags ?? []).includes("datamart");
+  const [editing, setEditing] = useState(false);
+  const [sql, setSql] = useState(dm?.sql ?? "");
+  const [saving, setSaving] = useState(false);
+  const [unmarking, setUnmarking] = useState(false);
+
+  const save = async () => {
+    if (!sql.trim()) { toast("err", "Paste the datamart's generation SQL first"); return; }
+    setSaving(true);
+    try {
+      const r = await mutate((v) => api.setDatasetDatamart(ds.id, sql.trim(), "sql", v));
+      if (r) { toast("ok", "Datamart analyzed with AI ✓"); setEditing(false); }
+    } catch (e) {
+      toast("err", (e as Error).message.includes("503") ? "Local LLM unavailable" : "Analysis failed");
+    } finally { setSaving(false); }
+  };
+
+  const unmark = async () => {
+    setUnmarking(true);
+    try {
+      await mutate((v) => api.clearDatasetDatamart(ds.id, v));
+      toast("ok", "No longer marked as a datamart");
+      setSql(""); setEditing(false);
+    } finally { setUnmarking(false); }
+  };
+
+  const addLink = async (fromId: string, via: string) => {
+    const r = await mutate((v) => api.addLineageEdge({ from_id: fromId, to_id: ds.id, via, kind: "datamart", confidence: 80 }, v));
+    if (r) toast("ok", "Lineage link added — see Lineage / Impact Analysis");
+  };
+
+  return (
+    <div className="border-t border-slate-200 dark:border-slate-800">
+      <div className="flex items-center gap-2 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+        <Boxes size={14} className="text-violet-500" /> Datamart
+        {isDatamart && <span className="chip bg-violet-500/10 text-violet-500 normal-case">marked</span>}
+        <div className="ml-auto flex gap-1.5">
+          {isDatamart && !editing && (
+            <button onClick={() => { setSql(dm?.sql ?? ""); setEditing(true); }} className="btn-ai-outline !py-1 text-xs">
+              <Sparkles size={12} /> {dm?.extraction ? "Edit / re-analyze" : "Add generation SQL"}
+            </button>
+          )}
+          {isDatamart ? (
+            <button onClick={unmark} disabled={unmarking} className="btn-outline !py-1 text-xs text-slate-500">
+              {unmarking ? <Loader2 size={12} className="animate-spin" /> : null} Unmark
+            </button>
+          ) : (
+            <button onClick={() => setEditing(true)} className="btn-ai-outline !py-1 text-xs">
+              <Boxes size={12} /> Mark as datamart
+            </button>
+          )}
+        </div>
+      </div>
+
+      {editing && (
+        <div className="space-y-2 px-4 pb-4">
+          <p className="text-[11px] text-slate-400">
+            A datamart is a calculated table that feeds a report or dashboard. Paste the SQL (or code) that
+            generates it — the local LLM will describe what it computes and propose links to the raw tables
+            it reads from.
+          </p>
+          <textarea className="input min-h-[110px] font-mono text-xs" value={sql} onChange={(e) => setSql(e.target.value)}
+            placeholder={"SELECT c.customer_id, SUM(o.total_amount) AS lifetime_value\nFROM orders o JOIN customers c ON c.customer_id = o.customer_id\nGROUP BY c.customer_id"} />
+          <div className="flex gap-2">
+            <button onClick={save} disabled={saving} className="btn-ai !py-1 text-xs">
+              {saving ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />} Save &amp; analyze with AI
+            </button>
+            <button onClick={() => setEditing(false)} className="btn-outline !py-1 text-xs">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {!editing && dm?.extraction && (
+        <div className="space-y-2 px-4 pb-4">
+          <p className="text-sm text-slate-600 dark:text-slate-300">{dm.extraction.functional_description}</p>
+          {dm.sql && (
+            <pre className="max-h-32 overflow-auto rounded-lg bg-slate-100 p-2.5 text-[11px] leading-relaxed dark:bg-slate-800/60">{dm.sql}</pre>
+          )}
+          {dm.extraction.tables_referenced.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {dm.extraction.tables_referenced.map((t, i) => (
+                <span key={i} className={`chip ${t.role === "target" ? "bg-violet-500/10 text-violet-500" : "bg-slate-500/10 text-slate-400"}`}>
+                  <Table2 size={9} /> {t.name} · {t.role}
+                </span>
+              ))}
+            </div>
+          )}
+          {dm.extraction.link_candidates.length > 0 && (
+            <div className="space-y-1">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Raw tables behind this datamart</div>
+              {dm.extraction.link_candidates.map((lc, i) => (
+                <div key={i} className="flex items-center gap-2 text-xs">
+                  <Link2 size={12} className="shrink-0 text-loom-500" />
+                  <span className="font-mono">{lc.label}</span>
+                  <span className="chip bg-slate-500/10 text-slate-400">{Math.round(lc.score * 100)}%</span>
+                  <button onClick={() => addLink(lc.dataset_id, lc.matched_table)}
+                    className="btn-ai-outline ml-auto !py-0.5 !px-2 text-[11px]">
+                    <Link2 size={11} /> Add lineage link
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {!editing && isDatamart && !dm?.extraction && (
+        <div className="px-4 pb-4 text-xs text-slate-400">
+          Marked as a datamart, but no generation SQL yet — add it above to trace its raw source tables.
+        </div>
+      )}
     </div>
   );
 }
@@ -1295,7 +1779,7 @@ function MappingModal({ ds, doc, onClose }: { ds: Dataset; doc: any; onClose: ()
           <Workflow size={18} className="text-flame-500" />
           <h3 className="font-semibold">ETL mapping — {ds.name}</h3>
           {cachedAt && <span className="chip bg-slate-500/10 text-slate-400">cached {timeAgo(cachedAt)} ago</span>}
-          <button onClick={() => load(true)} disabled={regenerating || loading} className="btn-ghost ml-auto !p-1 text-slate-400" title="Regenerate">
+          <button onClick={() => load(true)} disabled={regenerating || loading} className="btn-ghost ml-auto !p-1 text-loom-500" title="Regenerate">
             {regenerating ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
           </button>
           <button onClick={onClose} className="btn-ghost !p-1"><X size={16} /></button>

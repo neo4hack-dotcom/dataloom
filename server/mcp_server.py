@@ -85,6 +85,41 @@ TOOLS: dict[str, types.Tool] = {
             "required": ["dataset_id"], "additionalProperties": False,
         },
     ),
+    "list_mcp_sources": types.Tool(
+        name="list_mcp_sources",
+        description="List every other MCP (Model Context Protocol) server this catalog knows about — "
+                    "the MCP Library. For each, how many tools it exposes, how many were mapped into "
+                    "catalog tables, and how many have a documented query/code definition.",
+        inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
+    ),
+    "get_mcp_source_tools": types.Tool(
+        name="get_mcp_source_tools",
+        description="Get the full discovered tool inventory of one referenced MCP source (from the MCP "
+                    "Library), flagging which tools are already mapped into a catalog table and which "
+                    "have a documented query/code definition.",
+        inputSchema={
+            "type": "object", "properties": {"connection_id": {"type": "string"}},
+            "required": ["connection_id"], "additionalProperties": False,
+        },
+    ),
+    "get_mcp_query_definition": types.Tool(
+        name="get_mcp_query_definition",
+        description="Get the actual SQL/code behind one tool of a referenced MCP source, plus the local "
+                    "LLM's extracted functional description, referenced tables/columns and mapping "
+                    "reconciliation notes — the real logic behind that MCP tool, not just its schema.",
+        inputSchema={
+            "type": "object",
+            "properties": {"connection_id": {"type": "string"}, "tool": {"type": "string"}},
+            "required": ["connection_id", "tool"], "additionalProperties": False,
+        },
+    ),
+    "list_datamarts": types.Tool(
+        name="list_datamarts",
+        description="List every datamart in the catalog — a calculated/derived table that feeds a report "
+                    "or dashboard — with its generation SQL, the local LLM's functional description of what "
+                    "it computes, and which raw tables feed it. Use this to trace what's behind a report.",
+        inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
+    ),
 }
 
 
@@ -234,6 +269,71 @@ async def _h_sample_dataset_rows(store, args: dict[str, Any]) -> dict[str, Any]:
     return {"dataset_id": ds_id, "rows": filtered_rows, "row_count": len(filtered_rows)}
 
 
+async def _h_list_mcp_sources(store, args: dict[str, Any]) -> dict[str, Any]:
+    snap = store.snapshot()
+    out = []
+    for c in snap["connections"]:
+        if c.get("type") != "mcp":
+            continue
+        mapped = ((c.get("config") or {}).get("mcp_mapping") or {}).get("tables", [])
+        out.append({
+            "connection_id": c["id"], "name": c["name"],
+            "tool_count": len(c.get("mcp_tools") or []),
+            "mapped_table_count": len(mapped),
+            "query_definition_count": len(c.get("mcp_queries") or []),
+        })
+    return {"mcp_sources": out}
+
+
+async def _h_get_mcp_source_tools(store, args: dict[str, Any]) -> dict[str, Any]:
+    conn = store.get_connection(args["connection_id"])
+    if not conn or conn.get("type") != "mcp":
+        raise ValueError("MCP connection not found")
+    mapped_tools = {t.get("tool") for t in ((conn.get("config") or {}).get("mcp_mapping") or {}).get("tables", [])}
+    queried_tools = {q.get("tool") for q in (conn.get("mcp_queries") or [])}
+    tools = [{
+        "name": t.get("name"), "description": t.get("description"),
+        "mapped_to_table": t.get("name") in mapped_tools,
+        "has_query_definition": t.get("name") in queried_tools,
+    } for t in (conn.get("mcp_tools") or [])]
+    return {"connection_id": conn["id"], "name": conn["name"], "tools": tools}
+
+
+async def _h_get_mcp_query_definition(store, args: dict[str, Any]) -> dict[str, Any]:
+    conn = store.get_connection(args["connection_id"])
+    if not conn or conn.get("type") != "mcp":
+        raise ValueError("MCP connection not found")
+    entries = [q for q in (conn.get("mcp_queries") or []) if q.get("tool") == args["tool"]]
+    if not entries:
+        raise ValueError("No query definition found for this tool")
+    return {"connection_id": conn["id"], "tool": args["tool"], "definitions": [
+        {"title": e.get("title"), "language": e.get("language"), "code": e.get("code"),
+         "extraction": e.get("extraction")} for e in entries
+    ]}
+
+
+async def _h_list_datamarts(store, args: dict[str, Any]) -> dict[str, Any]:
+    snap = store.snapshot()
+    exposure = _exposure(store)
+    out = []
+    for d in snap["datasets"]:
+        doc = snap["docs"].get(d["id"], {})
+        if "datamart" not in (doc.get("tags") or []):
+            continue
+        if _dataset_denied(d["id"], exposure):
+            continue
+        dm = doc.get("datamart") or {}
+        extraction = dm.get("extraction") or {}
+        out.append({
+            "id": d["id"], "schema": d["schema"], "name": d["name"],
+            "definition": doc.get("definition"),
+            "generation_sql": dm.get("sql"),
+            "functional_description": extraction.get("functional_description"),
+            "source_tables": [t.get("name") for t in extraction.get("tables_referenced", [])],
+        })
+    return {"datamarts": out}
+
+
 _HANDLERS: dict[str, Callable[[Any, dict[str, Any]], Awaitable[dict[str, Any]]]] = {
     "list_datasets": _h_list_datasets,
     "get_dataset_schema": _h_get_dataset_schema,
@@ -242,6 +342,10 @@ _HANDLERS: dict[str, Callable[[Any, dict[str, Any]], Awaitable[dict[str, Any]]]]
     "get_lineage": _h_get_lineage,
     "get_glossary_term": _h_get_glossary_term,
     "sample_dataset_rows": _h_sample_dataset_rows,
+    "list_mcp_sources": _h_list_mcp_sources,
+    "get_mcp_source_tools": _h_get_mcp_source_tools,
+    "get_mcp_query_definition": _h_get_mcp_query_definition,
+    "list_datamarts": _h_list_datamarts,
 }
 
 

@@ -81,6 +81,7 @@ class ProfilerAgent:
                 "row_estimate": t["row_estimate"],
                 "comment": t.get("comment"),
                 "columns": col_profiles,
+                "profiled_at": time.time(),
             })
             log("ok", f"  ✓ {t['schema']}.{t['name']} — {len(cols)} columns profiled.")
             old = old_by_id.get(ds_id)
@@ -104,7 +105,7 @@ class LinkerAgent:
         log("info", f"Cross-analysing {len(cols)} columns (MinHash + inclusion)…")
         result = analyze_catalog(cols)
         store.set_matches(result["matches"])
-        store.set_relationships(result["relationships"])
+        store.merge_relationships(result["relationships"])
         log("ok", f"  ✓ {len(result['relationships'])} PK/FK relationships inferred.")
         log("ok", f"  ✓ {len(result['matches'])} 'same field' pairs detected.")
         for r in result["relationships"][:6]:
@@ -228,24 +229,59 @@ class QaAgent:
     id = "qa"
     name = "QA Reviewer"
     icon = "shield-check"
-    desc = "Audits the catalog: missing definitions, low quality, unflagged PII, contradictions."
+    desc = "Audits the catalog against your configured alert thresholds: missing definitions, low quality, high null rates, row-count drift, stale profiling, and unreviewed PII."
 
     def run(self, store, conn: dict[str, Any], log: LogFn) -> dict[str, Any]:
+        cfg = store.alert_settings
+        q_warn = cfg.get("quality_score_warn", 60)
+        q_crit = cfg.get("quality_score_critical", 35)
+        null_warn = cfg.get("null_ratio_warn", 0.5)
+        drift_pct = cfg.get("row_drift_warn_pct", 20)
+        require_pii = cfg.get("require_pii_validation", True)
+        stale_days = cfg.get("stale_days_warn", 30)
+        now = time.time()
+
         issues = []
         for d in store.datasets():
             doc = store.get_dataset_doc(d["id"]) or {}
             if not doc.get("definition"):
                 issues.append({"severity": "high", "dataset_id": d["id"],
                                "message": f"{d['name']}: missing table definition"})
+
+            profiled_at = d.get("profiled_at")
+            if profiled_at and stale_days > 0:
+                age_days = (now - profiled_at) / 86400
+                if age_days > stale_days:
+                    issues.append({"severity": "medium", "dataset_id": d["id"],
+                                   "message": f"{d['name']}: not re-profiled in {age_days:.0f} days (threshold {stale_days})"})
+
+            hist = doc.get("profile_history") or []
+            if hist:
+                prev = hist[-1].get("row_estimate", 0)
+                cur = d["row_estimate"]
+                if prev > 0:
+                    drop_pct = (prev - cur) / prev * 100
+                    if drop_pct > drift_pct:
+                        issues.append({"severity": "high", "dataset_id": d["id"],
+                                       "message": f"{d['name']}: row count dropped {drop_pct:.0f}% since last profile "
+                                                  f"({prev:,} → {cur:,}, threshold {drift_pct}%)"})
+
             for c in d["columns"]:
                 p = c["profile"]
                 cdoc = (doc.get("columns") or {}).get(c["name"], {})
-                if p["sensitivity"] == "PII":
+                if p["sensitivity"] == "PII" and require_pii and cdoc.get("status") != "validated":
                     issues.append({"severity": "high", "dataset_id": d["id"],
                                    "message": f"{d['name']}.{c['name']}: PII ({p['semantic_type']}) — verify classification"})
-                if p["quality_score"] < 60:
+                if p["quality_score"] < q_crit:
+                    issues.append({"severity": "high", "dataset_id": d["id"],
+                                   "message": f"{d['name']}.{c['name']}: critically low quality ({p['quality_score']}, threshold {q_crit})"})
+                elif p["quality_score"] < q_warn:
                     issues.append({"severity": "medium", "dataset_id": d["id"],
-                                   "message": f"{d['name']}.{c['name']}: low quality ({p['quality_score']})"})
+                                   "message": f"{d['name']}.{c['name']}: low quality ({p['quality_score']}, threshold {q_warn})"})
+                if p["null_ratio"] > null_warn:
+                    issues.append({"severity": "medium", "dataset_id": d["id"],
+                                   "message": f"{d['name']}.{c['name']}: {p['null_ratio']*100:.0f}% null "
+                                              f"(threshold {null_warn*100:.0f}%)"})
                 if not cdoc.get("definition"):
                     issues.append({"severity": "low", "dataset_id": d["id"],
                                    "message": f"{d['name']}.{c['name']}: missing definition"})
@@ -325,11 +361,18 @@ def run_pipeline(store, conn: dict[str, Any], agent_ids: list[str], run_id: str)
         store.update_run(run_id, {"status": "done", "finished_at": time.time(),
                                   "summary": summary, "progress": 1.0})
         log("done", "Pipeline complete ✅")
+        store.add_notification(audience="all", category="run", kind="success",
+                               title="Pipeline finished",
+                               message=f"{conn['name']}: {total} agent(s) completed.",
+                               link={"tab": "agents"})
     except Exception as e:  # pragma: no cover
         log("error", f"Failed: {e}")
         log("error", traceback.format_exc().splitlines()[-1])
         store.update_run(run_id, {"status": "error", "finished_at": time.time(),
                                   "error": str(e)})
+        store.add_notification(audience="all", category="run", kind="error",
+                               title="Pipeline failed",
+                               message=f"{conn['name']}: {e}", link={"tab": "agents"})
 
 
 # --------------------------------------------------------------------------- #
